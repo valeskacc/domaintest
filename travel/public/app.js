@@ -141,11 +141,23 @@ function Login() {
   async function submit(e) {
     e.preventDefault();
     setBusy(true); setMsg("");
-    const fn = mode === "login" ? sb.auth.signInWithPassword : sb.auth.signUp;
-    const { error } = await fn({ email: email.trim(), password: pw });
-    setBusy(false);
-    if (error) return setMsg(error.message);
-    if (mode === "signup") setMsg("Registriert! Du kannst dich jetzt anmelden.");
+    try {
+      const creds = { email: email.trim(), password: pw };
+      const { data, error } =
+        mode === "login"
+          ? await sb.auth.signInWithPassword(creds)
+          : await sb.auth.signUp(creds);
+      if (error) { setMsg(error.message); return; }
+      if (mode === "signup" && !data.session) {
+        setMode("login");
+        setMsg("Registriert! Bitte jetzt anmelden.");
+      }
+      // Bei vorhandener Session übernimmt onAuthStateChange automatisch.
+    } catch (err) {
+      setMsg("Fehler: " + (err?.message || String(err)));
+    } finally {
+      setBusy(false);
+    }
   }
   return html`
     <main>
