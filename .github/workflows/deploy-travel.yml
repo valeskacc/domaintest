@@ -1,0 +1,20 @@
+name: Deploy Travel
+
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - "travel/**"
+      - ".github/workflows/deploy-travel.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy travel app
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: travel
+          wranglerVersion: "4"
