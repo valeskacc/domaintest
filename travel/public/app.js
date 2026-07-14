@@ -37,7 +37,9 @@ function accommodationTags(acc) {
   return /zelt|camper|hütte|huette/i.test(acc || "") ? ["camping"] : [];
 }
 function computeQty(item, days) {
-  if (item.qty_per_days) return Math.max(item.default_qty || 1, Math.ceil(item.qty_per_days * days));
+  // Pro-Tag-Items richten sich nach der Reisedauer (z. B. 2 Tage -> 2 Paar Socken),
+  // nicht nach einem hohen Mindestwert. Sonst feste Standardmenge.
+  if (item.qty_per_days) return Math.max(1, Math.ceil(item.qty_per_days * days));
   return item.default_qty || 1;
 }
 
@@ -118,7 +120,7 @@ function App() {
     <header class="appbar">
       <div class="title">🧳 Packassistent</div>
       ${profile?.role === "admin" &&
-        html`<button class="ghost" onClick=${() => go({ name: "admin" })}>Admin</button>`}
+        html`<button class="ghost" onClick=${() => go({ name: "admin" })}>Nutzerverwaltung</button>`}
       <button class="ghost" onClick=${() => sb.auth.signOut()}>Logout</button>
     </header>
     <main>
@@ -243,6 +245,16 @@ function Wizard({ go }) {
   const [err, setErr] = useState("");
 
   const setLeg = (i, patch) => setLegs((ls) => ls.map((l, k) => (k === i ? { ...l, ...patch } : l)));
+  // Anlass "Business" markiert automatisch die Aktivität "Business" in allen Etappen
+  const choosePurpose = (p) => {
+    setPurpose(p);
+    setLegs((ls) => ls.map((l) => ({
+      ...l,
+      activities: p === "business"
+        ? Array.from(new Set([...l.activities, "business"]))
+        : l.activities.filter((t) => t !== "business"),
+    })));
+  };
   const toggleAct = (i, tag) =>
     setLeg(i, {
       activities: legs[i].activities.includes(tag)
@@ -290,7 +302,7 @@ function Wizard({ go }) {
       <label>Anlass</label>
       <div class="chips">
         ${["privat", "business"].map((p) => html`
-          <button class=${"chip " + (purpose === p ? "on" : "")} onClick=${() => setPurpose(p)}>
+          <button class=${"chip " + (purpose === p ? "on" : "")} onClick=${() => choosePurpose(p)}>
             ${p === "privat" ? "Privat" : "Business"}
           </button>`)}
       </div>
@@ -332,7 +344,7 @@ function Wizard({ go }) {
         </div>
       </div>`)}
 
-    <button class="ghost block" onClick=${() => setLegs([...legs, emptyLeg()])}>+ Weitere Etappe (Rundreise)</button>
+    <button class="ghost block" onClick=${() => setLegs([...legs, purpose === "business" ? { ...emptyLeg(), activities: ["business"] } : emptyLeg()])}>+ Weitere Etappe (Rundreise)</button>
     ${err && html`<p class="error">${err}</p>`}
 
     <div class="actionbar">
@@ -346,13 +358,12 @@ function Wizard({ go }) {
 function TripView({ tripId, go }) {
   const [trip, setTrip] = useState(null);
   const [items, setItems] = useState(null);
-  const [adding, setAdding] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [newCat, setNewCat] = useState("");
+  const [collapsed, setCollapsed] = useState(() => new Set());
+  const [addCat, setAddCat] = useState(null);   // Kategorie-Key, in dem gerade hinzugefügt wird
+  const [addText, setAddText] = useState("");
 
   async function reload() {
     if (!categories.length) await loadMeta();
-    setNewCat(categories[0]?.id || "");
     const [{ data: t }, { data: it }] = await Promise.all([
       sb.from("trips").select("*").eq("id", tripId).single(),
       sb.from("trip_items").select("*").eq("trip_id", tripId).eq("removed", false).order("created_at"),
@@ -369,13 +380,14 @@ function TripView({ tripId, go }) {
     setItems((xs) => xs.filter((x) => x.id !== id));
     await sb.from("trip_items").update({ removed: true }).eq("id", id);
   }
-  async function addItem() {
-    if (!newName.trim()) return;
-    const row = { trip_id: tripId, item_id: null, name: newName.trim(), category_id: newCat, qty: 1, source: "manual", packed: false, removed: false };
+  async function addToCat(catId) {
+    if (!addText.trim()) return;
+    const row = { trip_id: tripId, item_id: null, name: addText.trim(), category_id: catId, qty: 1, source: "manual", packed: false, removed: false };
     const { data } = await sb.from("trip_items").insert(row).select().single();
     setItems((xs) => [...xs, data]);
-    setNewName(""); setAdding(false);
+    setAddText(""); setAddCat(null);
   }
+  const toggle = (key) => setCollapsed((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
 
   if (!trip || !items) return html`<div class="spinner"></div>`;
 
@@ -383,7 +395,7 @@ function TripView({ tripId, go }) {
     .map((c) => ({ cat: c, list: items.filter((x) => x.category_id === c.id) }))
     .filter((g) => g.list.length);
   const uncategorized = items.filter((x) => !x.category_id);
-  if (uncategorized.length) groups.push({ cat: { name: "Sonstiges", icon: "📦" }, list: uncategorized });
+  if (uncategorized.length) groups.push({ cat: { id: null, name: "Sonstiges", icon: "📦" }, list: uncategorized });
 
   const total = items.length;
   const done = items.filter((x) => x.packed).length;
@@ -398,44 +410,47 @@ function TripView({ tripId, go }) {
       ${done}/${total} gepackt${weight > 0 ? ` · offen ${(weight / 1000).toFixed(1)} kg` : ""}
     </p>
 
-    ${groups.map((g) => html`
-      <div class="cathead">
-        <span>${g.cat.icon || "•"}</span><span>${g.cat.name}</span>
-        <span class="count">${g.list.filter((x) => x.packed).length}/${g.list.length}</span>
-      </div>
-      <div class="card" style="padding:6px 14px">
-        ${g.list.map((x) => html`
-          <div class="pitem">
-            <button class=${"check " + (x.packed ? "on" : "")} onClick=${() => patch(x.id, { packed: !x.packed })}>
-              ${x.packed ? "✓" : ""}
-            </button>
-            <span class=${"name " + (x.packed ? "done" : "")}>${x.name}</span>
-            <div class="qty">
-              <button onClick=${() => patch(x.id, { qty: Math.max(1, x.qty - 1) })}>−</button>
-              <span>${x.qty}</span>
-              <button onClick=${() => patch(x.id, { qty: x.qty + 1 })}>+</button>
-            </div>
-            <button class="danger" style="width:auto" onClick=${() => remove(x.id)}>✕</button>
-          </div>`)}
-      </div>`)}
+    ${groups.map((g) => {
+      const key = g.cat.id || g.cat.name;
+      const open = !collapsed.has(key);
+      return html`
+        <div class="cathead" onClick=${() => toggle(key)}>
+          <span class=${"chev " + (open ? "" : "closed")}>▾</span>
+          <span>${g.cat.icon || "•"}</span><span>${g.cat.name}</span>
+          <span class="count">${g.list.filter((x) => x.packed).length}/${g.list.length}</span>
+          ${g.cat.id &&
+            html`<button class="catadd" title="Hinzufügen"
+                   onClick=${(e) => { e.stopPropagation(); setAddCat(key); setAddText(""); if (!open) toggle(key); }}>＋</button>`}
+        </div>
+        ${open &&
+          html`
+            <div class="card" style="padding:6px 14px">
+              ${g.list.map((x) => html`
+                <div class="pitem">
+                  <button class=${"check " + (x.packed ? "on" : "")} onClick=${() => patch(x.id, { packed: !x.packed })}>
+                    ${x.packed ? "✓" : ""}
+                  </button>
+                  <span class=${"name " + (x.packed ? "done" : "")}>${x.name}</span>
+                  <div class="qty">
+                    <button onClick=${() => patch(x.id, { qty: Math.max(1, x.qty - 1) })}>−</button>
+                    <span>${x.qty}</span>
+                    <button onClick=${() => patch(x.id, { qty: x.qty + 1 })}>+</button>
+                  </div>
+                  <button class="danger" style="width:auto" onClick=${() => remove(x.id)}>✕</button>
+                </div>`)}
+              ${addCat === key &&
+                html`
+                  <div class="addrow">
+                    <input autofocus placeholder="Hinzufügen…" value=${addText}
+                           onInput=${(e) => setAddText(e.target.value)}
+                           onKeyDown=${(e) => e.key === "Enter" && addToCat(g.cat.id)} />
+                    <button class="primary" onClick=${() => addToCat(g.cat.id)}>OK</button>
+                  </div>`}
+            </div>`}
+      `;
+    })}
 
-    ${adding
-      ? html`
-        <div class="card">
-          <label>Neuer Eintrag</label>
-          <input autofocus placeholder="Was fehlt?" value=${newName} onInput=${(e) => setNewName(e.target.value)} />
-          <label>Kategorie</label>
-          <select value=${newCat} onChange=${(e) => setNewCat(e.target.value)}>
-            ${categories.map((c) => html`<option value=${c.id}>${c.icon} ${c.name}</option>`)}
-          </select>
-          <div class="row" style="margin-top:12px">
-            <button class="ghost" onClick=${() => setAdding(false)}>Abbrechen</button>
-            <button class="primary" onClick=${addItem}>Hinzufügen</button>
-          </div>
-        </div>`
-      : html`<button class="ghost block" onClick=${() => setAdding(true)}>+ Eigenes Item</button>`}
-
-    <div style="height:20px"></div>
+    <div style="height:24px"></div>
   `;
 }
 

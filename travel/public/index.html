@@ -6,24 +6,27 @@
   <meta name="theme-color" content="#0ea5e9" />
   <title>Packassistent</title>
   <style>
+    /* Dark Mode ist Standard (CI-Basis – hier später zentral anpassen) */
     :root {
-      --bg: #f6f7f9;
-      --card: #ffffff;
-      --text: #14181f;
-      --muted: #6b7280;
-      --border: #e5e7eb;
-      --primary: #0ea5e9;
-      --primary-ink: #ffffff;
-      --danger: #ef4444;
-      --ok: #16a34a;
+      --bg: #0d1117;
+      --card: #161b22;
+      --text: #e6edf3;
+      --muted: #9aa4b2;
+      --border: #2a313c;
+      --primary: #38bdf8;
+      --primary-ink: #06212e;
+      --danger: #f87171;
+      --ok: #34d399;
       --radius: 14px;
       --safe-b: env(safe-area-inset-bottom, 0px);
       --safe-t: env(safe-area-inset-top, 0px);
     }
-    @media (prefers-color-scheme: dark) {
+    /* Optionaler heller Modus nur, wenn das Gerät ausdrücklich hell will */
+    @media (prefers-color-scheme: light) {
       :root {
-        --bg: #0d1117; --card: #161b22; --text: #e6edf3; --muted: #9aa4b2;
-        --border: #2a313c; --primary: #38bdf8; --primary-ink: #06212e;
+        --bg: #f6f7f9; --card: #ffffff; --text: #14181f; --muted: #6b7280;
+        --border: #e5e7eb; --primary: #0ea5e9; --primary-ink: #ffffff;
+        --danger: #ef4444; --ok: #16a34a;
       }
     }
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -47,7 +50,10 @@
       border-bottom: 1px solid var(--border);
     }
     header.appbar .title { font-weight: 700; font-size: 1.05rem; flex: 1; }
-    header.appbar button { padding: 8px 12px; }
+    /* dezente, kleine Kopf-Buttons */
+    header.appbar button { width: auto; min-height: 32px; padding: 5px 10px;
+                           font-size: .75rem; font-weight: 500; color: var(--muted);
+                           border-color: var(--border); }
 
     main { padding: 16px; padding-bottom: calc(96px + var(--safe-b)); }
 
@@ -103,8 +109,16 @@
     .qty { display: flex; align-items: center; gap: 6px; }
     .qty button { width: 34px; min-height: 34px; padding: 0; border-radius: 8px; }
     .qty span { min-width: 20px; text-align: center; }
-    .cathead { display: flex; align-items: center; gap: 8px; margin: 20px 0 6px; font-weight: 700; }
-    .cathead .count { color: var(--muted); font-weight: 500; font-size: .85rem; }
+    .cathead { display: flex; align-items: center; gap: 8px; margin: 18px 0 6px; font-weight: 700;
+               cursor: pointer; user-select: none; }
+    .cathead .count { color: var(--muted); font-weight: 500; font-size: .85rem; margin-left: auto; }
+    .cathead .chev { width: 16px; display: inline-block; transition: transform .15s; font-size: .8rem; color: var(--muted); }
+    .cathead .chev.closed { transform: rotate(-90deg); }
+    .cathead .catadd { width: 30px; min-height: 30px; padding: 0; border-radius: 8px; font-size: 1.1rem;
+                       line-height: 1; color: var(--primary); }
+    .addrow { display: flex; gap: 8px; padding: 10px 4px; }
+    .addrow input { min-height: 42px; }
+    .addrow button { width: auto; min-height: 42px; padding: 0 16px; }
     .badge { font-size: .72rem; color: var(--muted); border: 1px solid var(--border);
              border-radius: 999px; padding: 2px 8px; }
     .center { text-align: center; }
