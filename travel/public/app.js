@@ -28,6 +28,26 @@ const ACTIVITIES = [
   { tag: "business", l: "Business" },
 ];
 
+/* Alle möglichen Auslöser für den Katalog-Editor (Reihenfolge = Anzeige) */
+const TAGS = [
+  { v: "basis", l: "Immer (Basis)" },
+  { v: "flug", l: "Flugzeug" },
+  { v: "auto", l: "Auto" },
+  { v: "bahn", l: "Bahn" },
+  { v: "motorrad", l: "Motorrad" },
+  { v: "privat", l: "Privat" },
+  { v: "business", l: "Business" },
+  { v: "strand", l: "Strand" },
+  { v: "warm", l: "Warm" },
+  { v: "kalt", l: "Kalt" },
+  { v: "winter", l: "Winter" },
+  { v: "wandern", l: "Wandern" },
+  { v: "camping", l: "Camping" },
+  { v: "kite", l: "Kitesurfen" },
+  { v: "wassersport", l: "Wassersport" },
+  { v: "sport", l: "Sport" },
+];
+
 /* ---------- Helfer ---------- */
 function daysBetween(a, b) {
   if (!a || !b) return 1;
@@ -60,7 +80,7 @@ function toRow(it, days) {
 /* Reisekontext (aussagekräftige Tags, ohne "basis") für kontextbezogenes Lernen */
 function contextTags(trip, legs) {
   const s = new Set();
-  if (trip && trip.purpose === "business") s.add("business");
+  if (trip && trip.purpose) s.add(trip.purpose);
   for (const l of legs || []) {
     if (l.transport) s.add(l.transport);
     for (const t of accommodationTags(l.accommodation)) s.add(t);
@@ -118,7 +138,7 @@ function applyLearning(chosen, items, ctxTags, signals, days) {
 /* Regel-Engine: aus Reise + Etappen die passenden Katalog-Items wählen */
 function generateList(items, trip, legs, signals) {
   const tags = new Set(["basis"]);
-  if (trip.purpose === "business") tags.add("business");
+  if (trip.purpose) tags.add(trip.purpose); // 'privat' oder 'business' als Auslöser
   let flugHandOnly = false;
   let enoughLuggage = false; // Auto, Bahn oder Flug MIT Aufgabegepäck
   let motorrad = false;
@@ -350,6 +370,7 @@ function App() {
       ${view.name === "trip" && html`<${TripView} tripId=${view.tripId} go=${go} />`}
       ${view.name === "review" && html`<${Review} tripId=${view.tripId} go=${go} />`}
       ${view.name === "admin" && html`<${Admin} go=${go} />`}
+      ${view.name === "catalog" && html`<${Catalog} go=${go} />`}
     </main>
   `;
 }
@@ -800,6 +821,116 @@ function TripView({ tripId, go }) {
   `;
 }
 
+/* ---------- Katalog- & Regel-Editor (Admin) ---------- */
+function Catalog({ go }) {
+  const [items, setItems] = useState(null);
+  const [ed, setEd] = useState(null); // null = Liste; Objekt = im Editor
+
+  async function load() {
+    if (!categories.length) await loadMeta();
+    const { data } = await sb.from("items").select("*").eq("is_global", true).order("name");
+    setItems(data || []);
+  }
+  useEffect(() => { load(); }, []);
+
+  const blank = () => ({ id: null, name: "", category_id: categories[0]?.id || "", mode: "fixed", qty: 1, weight: "", tags: [], bulky: false });
+  const openEdit = (it) => setEd(it ? {
+    id: it.id, name: it.name, category_id: it.category_id || categories[0]?.id,
+    mode: it.qty_per_days ? "perday" : "fixed", qty: it.qty_per_days || it.default_qty || 1,
+    weight: it.weight_grams || "", tags: it.tags || [], bulky: !!it.bulky,
+  } : blank());
+  const patch = (p) => setEd((e) => ({ ...e, ...p }));
+  const toggleTag = (v) => setEd((e) => ({ ...e, tags: e.tags.includes(v) ? e.tags.filter((t) => t !== v) : [...e.tags, v] }));
+
+  async function save() {
+    const e = ed;
+    if (!e.name.trim()) return;
+    const row = {
+      name: e.name.trim(), category_id: e.category_id, is_global: true, tags: e.tags, bulky: e.bulky,
+      weight_grams: e.weight === "" || e.weight === null ? null : Number(e.weight),
+      default_qty: e.mode === "fixed" ? Number(e.qty) || 1 : 1,
+      qty_per_days: e.mode === "perday" ? Number(e.qty) || 1 : null,
+    };
+    if (e.id) await sb.from("items").update(row).eq("id", e.id);
+    else await sb.from("items").insert(row);
+    setEd(null); load();
+  }
+  async function del() {
+    if (!ed.id) return setEd(null);
+    if (!confirm("Item wirklich löschen?")) return;
+    await sb.from("items").delete().eq("id", ed.id);
+    setEd(null); load();
+  }
+
+  if (!items) return html`<div class="spinner"></div>`;
+
+  if (ed) return html`
+    <div style="display:flex;align-items:center;gap:10px">
+      <button class="ghost" style="width:auto" onClick=${() => setEd(null)}>‹</button>
+      <h1 style="flex:1;font-size:1.25rem">${ed.id ? "Item bearbeiten" : "Neues Item"}</h1>
+    </div>
+    <div class="card">
+      <label>Name</label>
+      <input placeholder="z. B. FFP2-Maske" value=${ed.name} onInput=${(e) => patch({ name: e.target.value })} />
+      <label>Kategorie</label>
+      <select value=${ed.category_id} onChange=${(e) => patch({ category_id: e.target.value })}>
+        ${categories.map((c) => html`<option value=${c.id}>${c.icon} ${c.name}</option>`)}
+      </select>
+      <label>Menge</label>
+      <div class="chips">
+        <button class=${"chip " + (ed.mode === "fixed" ? "on" : "")} onClick=${() => patch({ mode: "fixed" })}>Feste Menge</button>
+        <button class=${"chip " + (ed.mode === "perday" ? "on" : "")} onClick=${() => patch({ mode: "perday" })}>Pro Tag</button>
+      </div>
+      <div class="qty" style="margin-top:10px">
+        <button onClick=${() => patch({ qty: Math.max(1, Number(ed.qty) - 1) })}>−</button>
+        <span>${ed.qty}</span>
+        <button onClick=${() => patch({ qty: Number(ed.qty) + 1 })}>+</button>
+        <span class="muted" style="margin-left:8px">${ed.mode === "perday" ? "pro Tag" : "Stück"}</span>
+      </div>
+      <label>Erscheint bei (Auslöser)</label>
+      <div class="chips">
+        ${TAGS.map((t) => html`
+          <button class=${"chip " + (ed.tags.includes(t.v) ? "on" : "")} onClick=${() => toggleTag(t.v)}>${t.l}</button>`)}
+      </div>
+      <label>Gewicht in Gramm (optional)</label>
+      <input type="number" inputmode="numeric" placeholder="z. B. 30" value=${ed.weight} onInput=${(e) => patch({ weight: e.target.value })} />
+      <label style="display:flex;align-items:center;gap:10px;margin-top:14px">
+        <input type="checkbox" style="width:24px;min-height:24px" checked=${ed.bulky} onChange=${(e) => patch({ bulky: e.target.checked })} />
+        <span style="color:var(--text);font-weight:500">Sperrig (beim Motorrad weglassen)</span>
+      </label>
+    </div>
+    <button class="primary block" style="min-height:52px" onClick=${save}>${ed.id ? "Speichern" : "Anlegen"}</button>
+    ${ed.id && html`<button class="danger block" style="margin-top:10px" onClick=${del}>Löschen</button>`}
+    <div style="height:24px"></div>
+  `;
+
+  const groups = categories
+    .map((c) => ({ cat: c, list: items.filter((x) => x.category_id === c.id) }))
+    .filter((g) => g.list.length);
+  return html`
+    <div style="display:flex;align-items:center;gap:10px">
+      <button class="ghost" style="width:auto" onClick=${() => go({ name: "admin" })}>‹</button>
+      <h1 style="flex:1;font-size:1.25rem">Katalog & Regeln</h1>
+    </div>
+    <p class="muted">Items sind die Regeln: Name + Menge + „erscheint bei". Beispiel FFP2-Maske: Menge 2, Auslöser „Flugzeug".</p>
+    <button class="primary block" onClick=${() => openEdit(null)}>+ Neues Item / Regel</button>
+    ${groups.map((g) => html`
+      <div class="cathead" style="cursor:default">
+        <span>${g.cat.icon}</span><span>${g.cat.name}</span><span class="count">${g.list.length}</span>
+      </div>
+      <div class="card" style="padding:6px 14px">
+        ${g.list.map((it) => html`
+          <div class="pitem" style="cursor:pointer" onClick=${() => openEdit(it)}>
+            <span class="name" style="flex:1">${it.name}</span>
+            <span class="muted" style="font-size:.78rem">
+              ${it.qty_per_days ? it.qty_per_days + "/Tag" : "×" + it.default_qty}${(it.tags || []).length ? " · " + it.tags.join(", ") : ""}
+            </span>
+          </div>`)}
+      </div>`)}
+    <div style="height:24px"></div>
+  `;
+}
+
 /* ---------- Reise-Rückblick (Lernen) ---------- */
 function Review({ tripId, go }) {
   const [trip, setTrip] = useState(null);
@@ -900,6 +1031,8 @@ function Admin({ go }) {
       <button class="ghost" style="width:auto" onClick=${() => go({ name: "home" })}>‹</button>
       <h1 style="flex:1;font-size:1.25rem">Nutzerverwaltung</h1>
     </div>
+    <button class="primary block" onClick=${() => go({ name: "catalog" })}>🧳 Katalog & Regeln bearbeiten</button>
+    <h2>Nutzer</h2>
     ${rows === null && html`<div class="spinner"></div>`}
     ${(rows || []).map((u) => html`
       <div class="card" style="display:flex;align-items:center;gap:10px">
