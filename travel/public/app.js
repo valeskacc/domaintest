@@ -39,7 +39,12 @@ function accommodationTags(acc) {
 function computeQty(item, days) {
   // Pro-Tag-Items richten sich nach der Reisedauer (z. B. 2 Tage -> 2 Paar Socken),
   // nicht nach einem hohen Mindestwert. Sonst feste Standardmenge.
-  if (item.qty_per_days) return Math.max(1, Math.ceil(item.qty_per_days * days));
+  if (item.qty_per_days) {
+    let n = Math.ceil(item.qty_per_days * days);
+    // Am Anreisetag trägt man Socken/Unterwäsche bereits -> einen Tag abziehen.
+    if (item.travel_day_worn) n -= Math.ceil(item.qty_per_days);
+    return Math.max(1, n);
+  }
   return item.default_qty || 1;
 }
 
@@ -243,6 +248,14 @@ function Wizard({ go }) {
   const [legs, setLegs] = useState([emptyLeg()]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [trips, setTrips] = useState([]);
+  const [template, setTemplate] = useState(""); // optionale Vorlage-Reise
+
+  useEffect(() => {
+    sb.from("trips").select("id,title,start_date")
+      .order("start_date", { ascending: false, nullsFirst: false })
+      .then(({ data }) => setTrips(data || []));
+  }, []);
 
   const setLeg = (i, patch) => setLegs((ls) => ls.map((l, k) => (k === i ? { ...l, ...patch } : l)));
   // Anlass "Business" markiert automatisch die Aktivität "Business" in allen Etappen
@@ -282,14 +295,31 @@ function Wizard({ go }) {
       }))
     );
     const { items } = await loadMeta();
-    const list = generateList(items, trip, legs).map((x) => ({ ...x, trip_id: trip.id }));
-    if (list.length) await sb.from("trip_items").insert(list);
+    let list = generateList(items, trip, legs);
+    if (template) {
+      // Auf bestehende Reise aufbauen: deren Items zuerst, dann neue Vorschläge ergänzen
+      const { data: tItems } = await sb.from("trip_items")
+        .select("name,category_id,qty,weight_grams,item_id")
+        .eq("trip_id", template).eq("removed", false);
+      const base = (tItems || []).map((t) => ({
+        item_id: t.item_id, name: t.name, category_id: t.category_id,
+        qty: t.qty, weight_grams: t.weight_grams, packed: false, source: "suggested", removed: false,
+      }));
+      const extra = list.filter((x) => !base.some((b) => b.name.toLowerCase() === x.name.toLowerCase()));
+      list = [...base, ...extra];
+    }
+    const rows = list.map((x) => ({ ...x, trip_id: trip.id }));
+    if (rows.length) await sb.from("trip_items").insert(rows);
     setBusy(false);
     go({ name: "trip", tripId: trip.id });
   }
 
   return html`
-    <h1>Neue Reise</h1>
+    <div style="display:flex;align-items:center;gap:10px">
+      <button class="ghost" style="width:auto;min-height:34px;padding:5px 10px;font-size:.8rem"
+              onClick=${() => go({ name: "home" })}>‹ Zurück</button>
+      <h1 style="flex:1;font-size:1.3rem;margin:0">Neue Reise</h1>
+    </div>
     <p class="muted">${days} ${days === 1 ? "Tag" : "Tage"} · daraus wird deine Liste erstellt.</p>
 
     <div class="card">
@@ -313,6 +343,16 @@ function Wizard({ go }) {
         <button onClick=${() => setPersons((n) => n + 1)}>+</button>
       </div>
     </div>
+
+    ${trips.length > 0 && html`
+      <div class="card">
+        <label>Auf bestehende Reise aufbauen (optional)</label>
+        <select value=${template} onChange=${(e) => setTemplate(e.target.value)}>
+          <option value="">— Nur aus Vorschlägen erstellen —</option>
+          ${trips.map((t) => html`<option value=${t.id}>${t.title}</option>`)}
+        </select>
+        ${template && html`<p class="muted" style="margin:.5rem 0 0;font-size:.8rem">Die neue Liste startet mit den Items dieser Reise und ergänzt neue Vorschläge.</p>`}
+      </div>`}
 
     ${legs.map((leg, i) => html`
       <div class="card">
@@ -347,10 +387,11 @@ function Wizard({ go }) {
     <button class="ghost block" onClick=${() => setLegs([...legs, purpose === "business" ? { ...emptyLeg(), activities: ["business"] } : emptyLeg()])}>+ Weitere Etappe (Rundreise)</button>
     ${err && html`<p class="error">${err}</p>`}
 
-    <div class="actionbar">
-      <button class="ghost" style="flex:0 0 auto" onClick=${() => go({ name: "home" })}>Zurück</button>
-      <button class="primary block" disabled=${busy} onClick=${create}>${busy ? "Erstelle…" : "Packliste erstellen"}</button>
-    </div>
+    <button class="primary block" style="min-height:56px;font-size:1.05rem;margin-top:8px"
+            disabled=${busy} onClick=${create}>
+      ${busy ? "Erstelle…" : "Packliste erstellen"}
+    </button>
+    <div style="height:24px"></div>
   `;
 }
 
@@ -388,6 +429,30 @@ function TripView({ tripId, go }) {
     setAddText(""); setAddCat(null);
   }
   const toggle = (key) => setCollapsed((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
+
+  async function copyTrip() {
+    const { data: u } = await sb.auth.getUser();
+    const { data: nt, error } = await sb.from("trips").insert({
+      user_id: u.user.id, title: trip.title + " (Kopie)", start_date: trip.start_date,
+      end_date: trip.end_date, purpose: trip.purpose, persons: trip.persons, notes: trip.notes,
+    }).select().single();
+    if (error) return;
+    const { data: srcLegs } = await sb.from("trip_legs").select("*").eq("trip_id", tripId);
+    if (srcLegs?.length) await sb.from("trip_legs").insert(srcLegs.map((l) => ({
+      trip_id: nt.id, position: l.position, destination: l.destination, accommodation: l.accommodation,
+      transport: l.transport, hand_luggage_only: l.hand_luggage_only, activities: l.activities,
+    })));
+    if (items.length) await sb.from("trip_items").insert(items.map((x) => ({
+      trip_id: nt.id, item_id: x.item_id, name: x.name, category_id: x.category_id,
+      qty: x.qty, weight_grams: x.weight_grams, packed: false, source: x.source, removed: false,
+    })));
+    go({ name: "trip", tripId: nt.id });
+  }
+  async function deleteTrip() {
+    if (!confirm("Diese Packliste wirklich löschen?")) return;
+    await sb.from("trips").delete().eq("id", tripId);
+    go({ name: "home" });
+  }
 
   if (!trip || !items) return html`<div class="spinner"></div>`;
 
@@ -450,6 +515,10 @@ function TripView({ tripId, go }) {
       `;
     })}
 
+    <div class="row" style="margin-top:18px">
+      <button class="ghost" onClick=${copyTrip}>⧉ Kopieren</button>
+      <button class="danger" onClick=${deleteTrip}>🗑 Löschen</button>
+    </div>
     <div style="height:24px"></div>
   `;
 }
