@@ -140,6 +140,11 @@
                overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
     .suggest-item { padding: 12px 14px; cursor: pointer; border-bottom: 1px solid var(--border); font-size: .92rem; }
     .suggest-item:last-child { border-bottom: 0; }
+    /* Rückblick: gebraucht / unnötig */
+    .tag-btn { width: auto; min-height: 36px; flex: 0 0 auto; padding: 6px 12px; border-radius: 999px;
+               font-size: .82rem; background: transparent; }
+    .tag-btn.on-ok { background: var(--ok); color: #06231c; border-color: transparent; }
+    .tag-btn.on-bad { background: var(--danger); color: #2a0f0d; border-color: transparent; }
     .badge { font-size: .72rem; color: var(--muted); border: 1px solid var(--border);
              border-radius: 999px; padding: 2px 8px; }
     .mini-ic { width: 36px; min-height: 36px; flex: 0 0 auto; padding: 0; border-radius: 9px;

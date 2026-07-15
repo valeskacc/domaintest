@@ -57,8 +57,66 @@ function toRow(it, days) {
   };
 }
 
+/* Reisekontext (aussagekräftige Tags, ohne "basis") für kontextbezogenes Lernen */
+function contextTags(trip, legs) {
+  const s = new Set();
+  if (trip && trip.purpose === "business") s.add("business");
+  for (const l of legs || []) {
+    if (l.transport) s.add(l.transport);
+    for (const t of accommodationTags(l.accommodation)) s.add(t);
+    for (const a of l.activities || []) s.add(a);
+  }
+  return [...s];
+}
+
+async function recordSignal(kind, name, tags, category_id) {
+  try {
+    const { data: u } = await sb.auth.getUser();
+    if (!u?.user) return;
+    await sb.from("pack_signals").insert({
+      user_id: u.user.id, item_name: name, kind, tags: tags || [], category_id: category_id || null,
+    });
+  } catch (_e) { /* Lernen darf den Flow nie blockieren */ }
+}
+
+/* Aus den gesammelten Signalen die Vorschlagsliste anpassen (kontextbezogen) */
+function applyLearning(chosen, items, ctxTags, signals, days) {
+  if (!signals || !signals.length) return chosen;
+  const ctx = new Set(ctxTags);
+  const W = { added: 2, missed: 3, used: 1, removed: -2, unused: -2 };
+  const score = new Map(); // nameKey -> { score, category_id, name }
+  for (const s of signals) {
+    const st = s.tags || [];
+    const relevant = st.length === 0 ? true : st.some((t) => ctx.has(t)); // leere Tags = kontextunabhängig
+    if (!relevant) continue;
+    const key = s.item_name.toLowerCase();
+    const cur = score.get(key) || { score: 0, category_id: s.category_id, name: s.item_name };
+    cur.score += W[s.kind] || 0;
+    if (s.category_id && !cur.category_id) cur.category_id = s.category_id;
+    score.set(key, cur);
+  }
+  const present = new Set(chosen.map((x) => x.name.toLowerCase()));
+  // Wegnehmen: was konsequent gestrichen/ungenutzt wurde
+  const out = chosen.filter((x) => {
+    const sc = score.get(x.name.toLowerCase());
+    return !(sc && sc.score <= -3);
+  });
+  // Ergänzen: was konsequent selbst hinzugefügt/vermisst wurde
+  for (const [key, v] of score) {
+    if (v.score >= 3 && !present.has(key)) {
+      const it = items.find((i) => i.name.toLowerCase() === key);
+      out.push(it ? toRow(it, days) : {
+        item_id: null, name: v.name, category_id: v.category_id || null, qty: 1,
+        weight_grams: null, packed: false, source: "suggested", removed: false,
+      });
+      present.add(key);
+    }
+  }
+  return out;
+}
+
 /* Regel-Engine: aus Reise + Etappen die passenden Katalog-Items wählen */
-function generateList(items, trip, legs) {
+function generateList(items, trip, legs, signals) {
   const tags = new Set(["basis"]);
   if (trip.purpose === "business") tags.add("business");
   let flugHandOnly = false;
@@ -103,7 +161,9 @@ function generateList(items, trip, legs) {
       packed: false, source: "suggested", removed: false,
     });
   }
-  return chosen;
+  // Gelerntes anwenden (kontextbezogen)
+  const ctxTags = [...tags].filter((t) => t !== "basis");
+  return applyLearning(chosen, items, ctxTags, signals, days);
 }
 
 /* Kategorien-Cache (Name -> id, id -> obj) */
@@ -288,6 +348,7 @@ function App() {
       ${view.name === "home" && html`<${Home} go=${go} />`}
       ${view.name === "wizard" && html`<${Wizard} go=${go} editId=${view.editId} />`}
       ${view.name === "trip" && html`<${TripView} tripId=${view.tripId} go=${go} />`}
+      ${view.name === "review" && html`<${Review} tripId=${view.tripId} go=${go} />`}
       ${view.name === "admin" && html`<${Admin} go=${go} />`}
     </main>
   `;
@@ -471,6 +532,7 @@ function Wizard({ go, editId }) {
     if (end < start) return setErr("Enddatum liegt vor Startdatum.");
     setBusy(true);
     const { items } = await loadMeta();
+    const { data: signals } = await sb.from("pack_signals").select("*");
     const tripData = { title: title.trim(), start_date: start, end_date: end, purpose, persons };
 
     if (editId) {
@@ -483,7 +545,7 @@ function Wizard({ go, editId }) {
       const keepNames = new Set((existing || []).filter((x) => x.packed || x.source === "manual").map((x) => x.name.toLowerCase()));
       const throwaway = (existing || []).filter((x) => !x.packed && x.source !== "manual");
       if (throwaway.length) await sb.from("trip_items").delete().in("id", throwaway.map((x) => x.id));
-      const fresh = generateList(items, tripData, legs).filter((x) => !keepNames.has(x.name.toLowerCase()));
+      const fresh = generateList(items, tripData, legs, signals).filter((x) => !keepNames.has(x.name.toLowerCase()));
       if (fresh.length) await sb.from("trip_items").insert(fresh.map((x) => ({ ...x, trip_id: editId })));
       setBusy(false);
       go({ name: "trip", tripId: editId });
@@ -495,7 +557,7 @@ function Wizard({ go, editId }) {
       .insert({ user_id: user.user.id, ...tripData }).select().single();
     if (error) { setBusy(false); return setErr(error.message); }
     await sb.from("trip_legs").insert(legRows(trip.id));
-    let list = generateList(items, trip, legs);
+    let list = generateList(items, trip, legs, signals);
     if (template) {
       // Auf bestehende Reise aufbauen: deren Items zuerst, dann neue Vorschläge ergänzen
       const { data: tItems } = await sb.from("trip_items")
@@ -618,15 +680,17 @@ function TripView({ tripId, go }) {
     setItems((xs) => xs.map((x) => (x.id === id ? { ...x, ...p } : x)));
     await sb.from("trip_items").update(p).eq("id", id);
   }
-  async function remove(id) {
-    setItems((xs) => xs.filter((x) => x.id !== id));
-    await sb.from("trip_items").update({ removed: true }).eq("id", id);
+  async function remove(x) {
+    setItems((xs) => xs.filter((i) => i.id !== x.id));
+    await sb.from("trip_items").update({ removed: true }).eq("id", x.id);
+    recordSignal("removed", x.name, contextTags(trip, legs), x.category_id);
   }
   async function addToCat(catId) {
     if (!addText.trim()) return;
     const row = { trip_id: tripId, item_id: null, name: addText.trim(), category_id: catId, qty: 1, source: "manual", packed: false, removed: false };
     const { data } = await sb.from("trip_items").insert(row).select().single();
     setItems((xs) => [...xs, data]);
+    recordSignal("added", row.name, contextTags(trip, legs), catId);
     setAddText(""); setAddCat(null);
   }
   const toggle = (key) => setCollapsed((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
@@ -691,7 +755,7 @@ function TripView({ tripId, go }) {
                     <span>${x.qty}</span>
                     <button onClick=${() => patch(x.id, { qty: x.qty + 1 })}>+</button>
                   </div>
-                  <button class="danger" style="width:auto" onClick=${() => remove(x.id)}>✕</button>
+                  <button class="danger" style="width:auto" onClick=${() => remove(x)}>✕</button>
                 </div>`)}
               ${addCat === key &&
                 html`
@@ -725,10 +789,98 @@ function TripView({ tripId, go }) {
       </p>
     </div>
 
-    <div class="row" style="margin-top:18px">
+    <button class="ghost block" style="margin-top:18px" onClick=${() => go({ name: "review", tripId })}>
+      📝 Reise-Rückblick${trip.reviewed_at ? " ✓" : ""}
+    </button>
+    <div class="row" style="margin-top:10px">
       <button class="ghost" onClick=${copyTrip}>⧉ Kopieren</button>
       <button class="danger" onClick=${deleteTrip}>🗑 Löschen</button>
     </div>
+    <div style="height:24px"></div>
+  `;
+}
+
+/* ---------- Reise-Rückblick (Lernen) ---------- */
+function Review({ tripId, go }) {
+  const [trip, setTrip] = useState(null);
+  const [legs, setLegs] = useState([]);
+  const [items, setItems] = useState(null);
+  const [marks, setMarks] = useState({}); // trip_item.id -> 'used' | 'unused'
+  const [missed, setMissed] = useState([]);
+  const [mName, setMName] = useState("");
+  const [mCat, setMCat] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      if (!categories.length) await loadMeta();
+      setMCat(categories[0]?.id || "");
+      const [{ data: t }, { data: lg }, { data: it }] = await Promise.all([
+        sb.from("trips").select("*").eq("id", tripId).single(),
+        sb.from("trip_legs").select("*").eq("trip_id", tripId),
+        sb.from("trip_items").select("*").eq("trip_id", tripId).eq("removed", false).order("name"),
+      ]);
+      setTrip(t); setLegs(lg || []); setItems(it || []);
+    })();
+  }, [tripId]);
+
+  const setMark = (id, v) => setMarks((m) => ({ ...m, [id]: m[id] === v ? undefined : v }));
+  function addMissed() {
+    if (!mName.trim()) return;
+    setMissed((xs) => [...xs, { name: mName.trim(), category_id: mCat }]);
+    setMName("");
+  }
+  async function save() {
+    setBusy(true);
+    const ctx = contextTags(trip, legs);
+    const { data: u } = await sb.auth.getUser();
+    const rows = [];
+    for (const it of items) {
+      const v = marks[it.id];
+      if (v === "used" || v === "unused")
+        rows.push({ user_id: u.user.id, item_name: it.name, kind: v, tags: ctx, category_id: it.category_id });
+    }
+    for (const m of missed)
+      rows.push({ user_id: u.user.id, item_name: m.name, kind: "missed", tags: ctx, category_id: m.category_id });
+    if (rows.length) await sb.from("pack_signals").insert(rows);
+    await sb.from("trips").update({ reviewed_at: new Date().toISOString() }).eq("id", tripId);
+    setBusy(false);
+    go({ name: "trip", tripId });
+  }
+
+  if (!trip || !items) return html`<div class="spinner"></div>`;
+  return html`
+    <div style="display:flex;align-items:center;gap:10px">
+      <button class="ghost" style="width:auto" onClick=${() => go({ name: "trip", tripId })}>‹</button>
+      <h1 style="flex:1;font-size:1.25rem">Rückblick</h1>
+    </div>
+    <p class="muted">Was hast du gebraucht oder nicht? Das verbessert deine künftigen Vorschläge – kontextbezogen zu dieser Reiseart.</p>
+
+    <div class="card" style="padding:6px 14px">
+      ${items.map((it) => html`
+        <div class="pitem">
+          <span class="name" style="flex:1">${it.name}</span>
+          <button class=${"tag-btn " + (marks[it.id] === "used" ? "on-ok" : "")} onClick=${() => setMark(it.id, "used")}>gebraucht</button>
+          <button class=${"tag-btn " + (marks[it.id] === "unused" ? "on-bad" : "")} onClick=${() => setMark(it.id, "unused")}>unnötig</button>
+        </div>`)}
+    </div>
+
+    <h2>Etwas vermisst?</h2>
+    <div class="card">
+      ${missed.map((m) => html`<div class="pitem"><span class="name" style="flex:1">＋ ${m.name}</span></div>`)}
+      <div class="addrow">
+        <input placeholder="Vermisstes Item…" value=${mName} onInput=${(e) => setMName(e.target.value)}
+               onKeyDown=${(e) => e.key === "Enter" && addMissed()} />
+        <button class="primary" onClick=${addMissed}>+</button>
+      </div>
+      <select value=${mCat} onChange=${(e) => setMCat(e.target.value)}>
+        ${categories.map((c) => html`<option value=${c.id}>${c.icon} ${c.name}</option>`)}
+      </select>
+    </div>
+
+    <button class="primary block" style="min-height:52px;margin-top:8px" disabled=${busy} onClick=${save}>
+      ${busy ? "Speichere…" : "Rückblick speichern"}
+    </button>
     <div style="height:24px"></div>
   `;
 }
