@@ -14,6 +14,7 @@ const TRANSPORT = [
   { v: "flug", l: "✈️ Flugzeug" },
   { v: "auto", l: "🚗 Auto" },
   { v: "bahn", l: "🚆 Bahn" },
+  { v: "motorrad", l: "🏍️ Motorrad" },
 ];
 const ACCOMMODATION = ["Hotel", "Airbnb / Ferienwohnung", "Zelt", "Hütte", "Camper", "Bei Freunden"];
 const ACTIVITIES = [
@@ -48,30 +49,46 @@ function computeQty(item, days) {
   return item.default_qty || 1;
 }
 
+function toRow(it, days) {
+  return {
+    item_id: it.id, name: it.name, category_id: it.category_id,
+    qty: computeQty(it, days), weight_grams: it.weight_grams,
+    packed: false, source: "suggested", removed: false,
+  };
+}
+
 /* Regel-Engine: aus Reise + Etappen die passenden Katalog-Items wählen */
 function generateList(items, trip, legs) {
   const tags = new Set(["basis"]);
   if (trip.purpose === "business") tags.add("business");
   let flugHandOnly = false;
+  let enoughLuggage = false; // Auto, Bahn oder Flug MIT Aufgabegepäck
   for (const leg of legs) {
     if (leg.transport) tags.add(leg.transport);
     for (const t of accommodationTags(leg.accommodation)) tags.add(t);
     for (const a of leg.activities || []) tags.add(a);
     if (leg.transport === "flug" && leg.hand_luggage_only) flugHandOnly = true;
+    if (leg.transport === "auto" || leg.transport === "bahn" ||
+        (leg.transport === "flug" && !leg.hand_luggage_only)) enoughLuggage = true;
   }
   const days = daysBetween(trip.start_date, trip.end_date);
-  const chosen = items
-    .filter((it) => (it.tags || []).some((t) => tags.has(t)))
-    .map((it) => ({
-      item_id: it.id,
-      name: it.name,
-      category_id: it.category_id,
-      qty: computeQty(it, days),
-      weight_grams: it.weight_grams,
-      packed: false,
-      source: "suggested",
-      removed: false,
-    }));
+  const chosen = items.filter((it) => (it.tags || []).some((t) => tags.has(t))).map((it) => toRow(it, days));
+
+  // Zusatzregeln, die Items unabhängig von Tags erzwingen
+  const present = new Set(chosen.map((x) => x.name.toLowerCase()));
+  const ensure = (name) => {
+    if (present.has(name.toLowerCase())) return;
+    const it = items.find((i) => i.name.toLowerCase() === name.toLowerCase());
+    if (it) { chosen.push(toRow(it, days)); present.add(name.toLowerCase()); }
+  };
+
+  // Privatreise in den Sommermonaten (Mai–Sep) -> Sonnencreme
+  const month = trip.start_date ? new Date(trip.start_date).getMonth() + 1 : 0;
+  if (trip.purpose !== "business" && month >= 5 && month <= 9) ensure("Sonnencreme");
+
+  // Genug Gepäck -> Haarschaum & Trockenshampoo (bei Motorrad/Handgepäck bewusst nicht)
+  if (enoughLuggage) { ensure("Haarschaum"); ensure("Trockenshampoo"); }
+
   if (flugHandOnly) {
     chosen.push({
       item_id: null, name: "Flüssigkeiten je ≤100 ml + 1-L-Beutel (Handgepäck!)",
@@ -97,6 +114,104 @@ async function loadMeta() {
   catByName = Object.fromEntries(categories.map((c) => [c.name, c.id]));
   catById = Object.fromEntries(categories.map((c) => [c.id, c]));
   return { items: items || [] };
+}
+
+async function duplicateTrip(id) {
+  const { data: u } = await sb.auth.getUser();
+  const { data: src } = await sb.from("trips").select("*").eq("id", id).single();
+  if (!src) return null;
+  const { data: nt } = await sb.from("trips").insert({
+    user_id: u.user.id, title: src.title + " (Kopie)", start_date: src.start_date,
+    end_date: src.end_date, purpose: src.purpose, persons: src.persons, notes: src.notes,
+  }).select().single();
+  const { data: legs } = await sb.from("trip_legs").select("*").eq("trip_id", id);
+  if (legs?.length) await sb.from("trip_legs").insert(legs.map((l) => ({
+    trip_id: nt.id, position: l.position, destination: l.destination, accommodation: l.accommodation,
+    transport: l.transport, hand_luggage_only: l.hand_luggage_only, activities: l.activities,
+  })));
+  const { data: its } = await sb.from("trip_items").select("*").eq("trip_id", id).eq("removed", false);
+  if (its?.length) await sb.from("trip_items").insert(its.map((x) => ({
+    trip_id: nt.id, item_id: x.item_id, name: x.name, category_id: x.category_id,
+    qty: x.qty, weight_grams: x.weight_grams, packed: false, source: x.source, removed: false,
+  })));
+  return nt.id;
+}
+async function removeTrip(id) { await sb.from("trips").delete().eq("id", id); }
+
+/* Kuratierte Ziel-Besonderheiten (erweiterbar) */
+const DEST_INFO = [
+  { re: /sansibar|zanzibar|tansania|tanzania/i, notes: [
+    "Pflicht-Reisekrankenversicherung für Sansibar (bei Einreise nachweisen)",
+    "Visum nötig (e-Visa / Visa on arrival)",
+    "Malaria-Risiko – Prophylaxe & Mückenschutz",
+    "Gelbfieber-Impfnachweis bei Einreise aus Gelbfiebergebiet",
+    "Steckdosen Typ D/G – Reiseadapter mitnehmen",
+  ] },
+  { re: /ägypten|egypt|hurghada|gouna|marsa|kairo/i, notes: [
+    "Visum nötig (e-Visa / Visa on arrival)",
+    "Leitungswasser nicht trinken",
+    "Mückenschutz empfehlenswert",
+  ] },
+  { re: /thailand|bali|indonesien|vietnam/i, notes: [
+    "Auslands-Reisekrankenversicherung dringend empfohlen",
+    "Reiseadapter prüfen",
+    "Mückenschutz (Dengue)",
+  ] },
+  { re: /usa|amerika|new york|kalifornien|florida/i, notes: [
+    "ESTA vor Abflug beantragen",
+    "Steckdosen Typ A/B – Adapter nötig",
+  ] },
+  { re: /uk|england|london|schottland|irland/i, notes: [
+    "Steckdosen Typ G – Adapter nötig",
+  ] },
+];
+function destNotesFor(legs) {
+  const out = new Set();
+  for (const l of legs || []) {
+    for (const d of DEST_INFO) if (d.re.test(l.destination || "")) d.notes.forEach((n) => out.add(n));
+  }
+  return [...out];
+}
+
+/* ---------- Wetter (Open-Meteo, kein API-Key) ---------- */
+function WeatherPanel({ destination, start, end }) {
+  const [st, setSt] = useState({ loading: true });
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        if (!destination) return setSt({ none: true });
+        const daysToStart = start ? Math.round((new Date(start) - new Date()) / 86400000) : 999;
+        if (daysToStart > 16) return setSt({ tooEarly: true });
+        const g = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(destination)}&count=1&language=de`).then((r) => r.json());
+        const loc = g.results && g.results[0];
+        if (!loc) return setSt({ noGeo: true });
+        const s = start || new Date().toISOString().slice(0, 10);
+        const e = end && end >= s ? end : s;
+        const w = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&start_date=${s}&end_date=${e}`).then((r) => r.json());
+        if (!alive) return;
+        const d = w.daily;
+        if (!d || !d.temperature_2m_max) return setSt({ err: true });
+        setSt({
+          place: loc.name,
+          max: Math.round(Math.max(...d.temperature_2m_max)),
+          min: Math.round(Math.min(...d.temperature_2m_min)),
+          rain: Math.max(...(d.precipitation_probability_max || [0]).map((x) => x || 0)),
+        });
+      } catch (_e) { if (alive) setSt({ err: true }); }
+    })();
+    return () => { alive = false; };
+  }, [destination, start, end]);
+
+  if (st.loading) return html`<p class="muted">🌦️ Wetter wird geladen…</p>`;
+  if (st.tooEarly) return html`<p class="muted">🌦️ Wettervorhersage gibt's ~16 Tage vor Reisebeginn.</p>`;
+  if (st.none || st.noGeo) return html`<p class="muted">🌦️ Wetter: Ziel nicht erkannt – Ort genauer angeben.</p>`;
+  if (st.err) return html`<p class="muted">🌦️ Wetter derzeit nicht verfügbar.</p>`;
+  const hint = st.rain >= 50 ? "Regen möglich – Regenjacke einpacken"
+    : st.max >= 25 ? "Warm – Sonnencreme & leichte Kleidung"
+    : st.max <= 8 ? "Kühl – warme Schichten"
+    : "Wechselhaft – flexibel packen";
+  return html`<p style="margin:.2rem 0"><strong>🌡️ ${st.place}:</strong> ${st.min}–${st.max}°C · Regen bis ${st.rain}%<br /><span class="muted">${hint}</span></p>`;
 }
 
 /* ---------- App ---------- */
@@ -196,10 +311,10 @@ function Login() {
 /* ---------- Home / Historie ---------- */
 function Home({ go }) {
   const [trips, setTrips] = useState(null);
-  useEffect(() => {
+  const load = () =>
     sb.from("trips").select("*").order("start_date", { ascending: false, nullsFirst: false })
       .then(({ data }) => setTrips(data || []));
-  }, []);
+  useEffect(() => { load(); }, []);
   const today = new Date().toISOString().slice(0, 10);
   const upcoming = (trips || []).filter((t) => !t.end_date || t.end_date >= today);
   const past = (trips || []).filter((t) => t.end_date && t.end_date < today);
@@ -210,26 +325,33 @@ function Home({ go }) {
     ${trips === null && html`<div class="spinner"></div>`}
     ${trips && trips.length === 0 && html`<div class="card center muted">Noch keine Reise. Leg unten los! 👇</div>`}
     ${upcoming.length > 0 && html`<h2>Anstehend & offen</h2>`}
-    ${upcoming.map((t) => html`<${TripCard} t=${t} go=${go} />`)}
+    ${upcoming.map((t) => html`<${TripCard} t=${t} go=${go} reload=${load} />`)}
     ${past.length > 0 && html`<h2>Archiv</h2>`}
-    ${past.map((t) => html`<${TripCard} t=${t} go=${go} />`)}
+    ${past.map((t) => html`<${TripCard} t=${t} go=${go} reload=${load} />`)}
     <div class="actionbar">
       <button class="primary block" onClick=${() => go({ name: "wizard" })}>+ Neue Reise</button>
     </div>
   `;
 }
-function TripCard({ t, go }) {
+function TripCard({ t, go, reload }) {
   const fmt = (d) => (d ? new Date(d).toLocaleDateString("de-DE", { day: "2-digit", month: "short" }) : "?");
+  async function copy(e) { e.stopPropagation(); await duplicateTrip(t.id); reload(); }
+  async function del(e) {
+    e.stopPropagation();
+    if (!confirm(`„${t.title}“ wirklich löschen?`)) return;
+    await removeTrip(t.id); reload();
+  }
   return html`
     <div class="card" style="cursor:pointer" onClick=${() => go({ name: "trip", tripId: t.id })}>
       <div style="display:flex;align-items:center;gap:10px">
-        <div style="flex:1">
+        <div style="flex:1;min-width:0">
           <div style="font-weight:700">${t.title}</div>
           <div class="muted" style="font-size:.85rem">
             ${fmt(t.start_date)} – ${fmt(t.end_date)} · ${t.purpose === "business" ? "Business" : "Privat"}
           </div>
         </div>
-        <div class="badge">${t.persons}👤</div>
+        <button class="mini-ic" title="Kopieren" onClick=${copy}>⧉</button>
+        <button class="mini-ic" title="Löschen" onClick=${del}>🗑</button>
       </div>
     </div>
   `;
@@ -320,7 +442,6 @@ function Wizard({ go }) {
               onClick=${() => go({ name: "home" })}>‹ Zurück</button>
       <h1 style="flex:1;font-size:1.3rem;margin:0">Neue Reise</h1>
     </div>
-    <p class="muted">${days} ${days === 1 ? "Tag" : "Tage"} · daraus wird deine Liste erstellt.</p>
 
     <div class="card">
       <label>Titel</label>
@@ -399,17 +520,19 @@ function Wizard({ go }) {
 function TripView({ tripId, go }) {
   const [trip, setTrip] = useState(null);
   const [items, setItems] = useState(null);
+  const [legs, setLegs] = useState([]);
   const [collapsed, setCollapsed] = useState(() => new Set());
   const [addCat, setAddCat] = useState(null);   // Kategorie-Key, in dem gerade hinzugefügt wird
   const [addText, setAddText] = useState("");
 
   async function reload() {
     if (!categories.length) await loadMeta();
-    const [{ data: t }, { data: it }] = await Promise.all([
+    const [{ data: t }, { data: it }, { data: lg }] = await Promise.all([
       sb.from("trips").select("*").eq("id", tripId).single(),
       sb.from("trip_items").select("*").eq("trip_id", tripId).eq("removed", false).order("created_at"),
+      sb.from("trip_legs").select("*").eq("trip_id", tripId).order("position"),
     ]);
-    setTrip(t); setItems(it || []);
+    setTrip(t); setItems(it || []); setLegs(lg || []);
   }
   useEffect(() => { reload(); }, [tripId]);
 
@@ -430,28 +553,10 @@ function TripView({ tripId, go }) {
   }
   const toggle = (key) => setCollapsed((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
 
-  async function copyTrip() {
-    const { data: u } = await sb.auth.getUser();
-    const { data: nt, error } = await sb.from("trips").insert({
-      user_id: u.user.id, title: trip.title + " (Kopie)", start_date: trip.start_date,
-      end_date: trip.end_date, purpose: trip.purpose, persons: trip.persons, notes: trip.notes,
-    }).select().single();
-    if (error) return;
-    const { data: srcLegs } = await sb.from("trip_legs").select("*").eq("trip_id", tripId);
-    if (srcLegs?.length) await sb.from("trip_legs").insert(srcLegs.map((l) => ({
-      trip_id: nt.id, position: l.position, destination: l.destination, accommodation: l.accommodation,
-      transport: l.transport, hand_luggage_only: l.hand_luggage_only, activities: l.activities,
-    })));
-    if (items.length) await sb.from("trip_items").insert(items.map((x) => ({
-      trip_id: nt.id, item_id: x.item_id, name: x.name, category_id: x.category_id,
-      qty: x.qty, weight_grams: x.weight_grams, packed: false, source: x.source, removed: false,
-    })));
-    go({ name: "trip", tripId: nt.id });
-  }
+  async function copyTrip() { const nid = await duplicateTrip(tripId); if (nid) go({ name: "trip", tripId: nid }); }
   async function deleteTrip() {
     if (!confirm("Diese Packliste wirklich löschen?")) return;
-    await sb.from("trips").delete().eq("id", tripId);
-    go({ name: "home" });
+    await removeTrip(tripId); go({ name: "home" });
   }
 
   if (!trip || !items) return html`<div class="spinner"></div>`;
@@ -465,6 +570,10 @@ function TripView({ tripId, go }) {
   const total = items.length;
   const done = items.filter((x) => x.packed).length;
   const weight = items.reduce((s, x) => s + (x.packed ? 0 : (x.weight_grams || 0) * x.qty), 0);
+  const firstDest = (legs.find((l) => l.destination) || {}).destination || "";
+  const transports = [...new Set(legs.map((l) => l.transport).filter(Boolean))];
+  const tLabel = (v) => (TRANSPORT.find((t) => t.v === v) || { l: v }).l;
+  const notes = destNotesFor(legs);
 
   return html`
     <div style="display:flex;align-items:center;gap:10px">
@@ -514,6 +623,24 @@ function TripView({ tripId, go }) {
             </div>`}
       `;
     })}
+
+    <h2>Infos & Entscheidungskriterien</h2>
+    <div class="card">
+      <p class="muted" style="margin-top:0">
+        ${firstDest ? firstDest : "Ziel offen"} · ${daysBetween(trip.start_date, trip.end_date)} Tage${transports.length ? " · " + transports.map(tLabel).join(", ") : ""}
+      </p>
+      <${WeatherPanel} destination=${firstDest} start=${trip.start_date} end=${trip.end_date} />
+      ${notes.length > 0 && html`
+        <div style="margin-top:10px">
+          <strong>📌 Besonderheiten am Ziel</strong>
+          <ul class="list-clean" style="margin:8px 0 0">
+            ${notes.map((n) => html`<li style="padding:4px 0;display:flex;gap:8px"><span>•</span><span>${n}</span></li>`)}
+          </ul>
+        </div>`}
+      <p class="muted" style="margin:12px 0 0;font-size:.78rem">
+        Hinweise ohne Gewähr – bitte offizielle Quellen (Auswärtiges Amt) prüfen.
+      </p>
+    </div>
 
     <div class="row" style="margin-top:18px">
       <button class="ghost" onClick=${copyTrip}>⧉ Kopieren</button>
