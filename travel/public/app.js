@@ -37,6 +37,7 @@ const TAGS = [
   { v: "motorrad", l: "Motorrad" },
   { v: "privat", l: "Privat" },
   { v: "business", l: "Business" },
+  { v: "workation", l: "Workation" },
   { v: "strand", l: "Strand" },
   { v: "warm", l: "Warm" },
   { v: "kalt", l: "Kalt" },
@@ -56,6 +57,10 @@ function daysBetween(a, b) {
 }
 function accommodationTags(acc) {
   return /zelt|camper|hütte|huette/i.test(acc || "") ? ["camping"] : [];
+}
+function purposeTagList(purpose) {
+  if (purpose === "workation") return ["privat", "business", "workation"];
+  return purpose ? [purpose] : [];
 }
 function computeQty(item, days) {
   // Pro-Tag-Items richten sich nach der Reisedauer (z. B. 2 Tage -> 2 Paar Socken),
@@ -138,14 +143,16 @@ function applyLearning(chosen, items, ctxTags, signals, days) {
 /* Regel-Engine: aus Reise + Etappen die passenden Katalog-Items wählen */
 function generateList(items, trip, legs, signals) {
   const tags = new Set(["basis"]);
-  if (trip.purpose) tags.add(trip.purpose); // 'privat' oder 'business' als Auslöser
+  for (const t of purposeTagList(trip.purpose)) tags.add(t); // privat / business / workation
   let flugHandOnly = false;
   let enoughLuggage = false; // Auto, Bahn oder Flug MIT Aufgabegepäck
   let motorrad = false;
+  let flug = false;
   for (const leg of legs) {
     if (leg.transport) tags.add(leg.transport);
     for (const t of accommodationTags(leg.accommodation)) tags.add(t);
     for (const a of leg.activities || []) tags.add(a);
+    if (leg.transport === "flug") flug = true;
     if (leg.transport === "flug" && leg.hand_luggage_only) flugHandOnly = true;
     if (leg.transport === "motorrad") motorrad = true;
     if (leg.transport === "auto" || leg.transport === "bahn" ||
@@ -173,6 +180,9 @@ function generateList(items, trip, legs, signals) {
 
   // Genug Gepäck -> Haarschaum & Trockenshampoo (bei Motorrad/Handgepäck bewusst nicht)
   if (enoughLuggage) { ensure("Haarschaum"); ensure("Trockenshampoo"); }
+
+  // Private (oder Workation-) Flugreise -> Handyhalterung fürs Flugzeug
+  if (trip.purpose !== "business" && flug) ensure("Handyhalterung (Flugzeug)");
 
   if (flugHandOnly) {
     chosen.push({
@@ -227,38 +237,38 @@ async function removeTrip(id) { await sb.from("trips").delete().eq("id", id); }
 
 /* Kuratierte Ziel-Besonderheiten (erweiterbar) */
 const DEST_INFO = [
-  { re: /sansibar|zanzibar|tansania|tanzania/i, notes: [
+  { re: /sansibar|zanzibar|tansania|tanzania/i, adapter: "Typ D/G", notes: [
     "Pflicht-Reisekrankenversicherung für Sansibar (bei Einreise nachweisen)",
     "Visum nötig (e-Visa / Visa on arrival)",
     "Malaria-Risiko – Prophylaxe & Mückenschutz",
     "Gelbfieber-Impfnachweis bei Einreise aus Gelbfiebergebiet",
-    "Steckdosen Typ D/G – Reiseadapter mitnehmen",
   ] },
-  { re: /ägypten|egypt|hurghada|gouna|marsa|kairo/i, notes: [
+  { re: /ägypten|egypt|hurghada|gouna|marsa|kairo/i, adapter: "Typ C/F (meist EU-kompatibel)", notes: [
     "Visum nötig (e-Visa / Visa on arrival)",
     "Leitungswasser nicht trinken",
     "Mückenschutz empfehlenswert",
   ] },
-  { re: /thailand|bali|indonesien|vietnam/i, notes: [
+  { re: /thailand|bali|indonesien|vietnam/i, adapter: "Typ A/B/C", notes: [
     "Auslands-Reisekrankenversicherung dringend empfohlen",
-    "Reiseadapter prüfen",
     "Mückenschutz (Dengue)",
   ] },
-  { re: /usa|amerika|new york|kalifornien|florida/i, notes: [
+  { re: /usa|amerika|new york|kalifornien|florida/i, adapter: "Typ A/B", notes: [
     "ESTA vor Abflug beantragen",
-    "Steckdosen Typ A/B – Adapter nötig",
   ] },
-  { re: /uk|england|london|schottland|irland/i, notes: [
-    "Steckdosen Typ G – Adapter nötig",
-  ] },
+  { re: /uk|england|london|schottland|irland/i, adapter: "Typ G", notes: [] },
 ];
-function destNotesFor(legs) {
-  const out = new Set();
+function destInfoFor(legs) {
+  const notes = new Set();
+  let adapter = null;
   for (const l of legs || []) {
-    for (const d of DEST_INFO) if (d.re.test(l.destination || "")) d.notes.forEach((n) => out.add(n));
+    for (const d of DEST_INFO) if (d.re.test(l.destination || "")) {
+      d.notes.forEach((n) => notes.add(n));
+      if (!adapter && d.adapter) adapter = d.adapter;
+    }
   }
-  return [...out];
+  return { notes: [...notes], adapter };
 }
+function amazonSearch(q) { return "https://www.amazon.de/s?k=" + encodeURIComponent(q); }
 
 /* ---------- Wetter (Open-Meteo, kein API-Key) ---------- */
 function WeatherPanel({ destination, start, end }) {
@@ -524,13 +534,18 @@ function Wizard({ go, editId }) {
 
   const setLeg = (i, patch) => setLegs((ls) => ls.map((l, k) => (k === i ? { ...l, ...patch } : l)));
   // Anlass "Business" markiert automatisch die Aktivität "Business" in allen Etappen
-  const choosePurpose = (p) => {
-    setPurpose(p);
+  // Von gewählt -> Bis springt mit (und darf nicht davor liegen)
+  const onStart = (v) => { setStart(v); if (!end || end < v) setEnd(v); };
+  const privActive = purpose === "privat" || purpose === "workation";
+  const bizActive = purpose === "business" || purpose === "workation";
+  const togglePart = (which) => {
+    const np = which === "privat" ? !privActive : privActive;
+    const nb = which === "business" ? !bizActive : bizActive;
+    const combined = np && nb ? "workation" : nb ? "business" : "privat"; // mind. Privat
+    setPurpose(combined);
     setLegs((ls) => ls.map((l) => ({
       ...l,
-      activities: p === "business"
-        ? Array.from(new Set([...l.activities, "business"]))
-        : l.activities.filter((t) => t !== "business"),
+      activities: nb ? Array.from(new Set([...l.activities, "business"])) : l.activities.filter((t) => t !== "business"),
     })));
   };
   const toggleAct = (i, tag) =>
@@ -540,6 +555,7 @@ function Wizard({ go, editId }) {
         : [...legs[i].activities, tag],
     });
   const days = daysBetween(start, end);
+  const nights = Math.max(0, days - 1);
 
   const legRows = (tid) => legs.map((l, i) => ({
     trip_id: tid, position: i + 1, destination: l.destination, accommodation: l.accommodation,
@@ -608,16 +624,16 @@ function Wizard({ go, editId }) {
       <label>Titel</label>
       <input placeholder="z. B. Kitesurfen Ägypten" value=${title} onInput=${(e) => setTitle(e.target.value)} />
       <div class="row">
-        <div><label>Von</label><input type="date" value=${start} onInput=${(e) => setStart(e.target.value)} /></div>
-        <div><label>Bis</label><input type="date" value=${end} onInput=${(e) => setEnd(e.target.value)} /></div>
+        <div><label>Von</label><input type="date" value=${start} onInput=${(e) => onStart(e.target.value)} /></div>
+        <div><label>Bis</label><input type="date" min=${start} value=${end} onInput=${(e) => setEnd(e.target.value)} /></div>
       </div>
+      ${start && end && end >= start && html`<p class="muted" style="margin:8px 0 0">📅 ${days} Tage · ${nights} ${nights === 1 ? "Nacht" : "Nächte"}</p>`}
       <label>Anlass</label>
       <div class="chips">
-        ${["privat", "business"].map((p) => html`
-          <button class=${"chip " + (purpose === p ? "on" : "")} onClick=${() => choosePurpose(p)}>
-            ${p === "privat" ? "Privat" : "Business"}
-          </button>`)}
+        <button class=${"chip " + (privActive ? "on" : "")} onClick=${() => togglePart("privat")}>Privat</button>
+        <button class=${"chip " + (bizActive ? "on" : "")} onClick=${() => togglePart("business")}>Business</button>
       </div>
+      ${purpose === "workation" && html`<p class="muted" style="margin:6px 0 0">= Workation (Homeoffice unterwegs) 💻</p>`}
       <label>Personen</label>
       <div class="qty">
         <button onClick=${() => setPersons((n) => Math.max(1, n - 1))}>−</button>
@@ -666,7 +682,7 @@ function Wizard({ go, editId }) {
         </div>
       </div>`)}
 
-    <button class="ghost block" onClick=${() => setLegs([...legs, purpose === "business" ? { ...emptyLeg(), activities: ["business"] } : emptyLeg()])}>+ Weitere Etappe (Rundreise)</button>
+    <button class="ghost block" onClick=${() => setLegs([...legs, bizActive ? { ...emptyLeg(), activities: ["business"] } : emptyLeg()])}>+ Weitere Etappe (Rundreise)</button>
     ${err && html`<p class="error">${err}</p>`}
 
     <button class="primary block" style="min-height:56px;font-size:1.05rem;margin-top:8px"
@@ -685,15 +701,31 @@ function TripView({ tripId, go }) {
   const [collapsed, setCollapsed] = useState(() => new Set());
   const [addCat, setAddCat] = useState(null);   // Kategorie-Key, in dem gerade hinzugefügt wird
   const [addText, setAddText] = useState("");
+  const [catOrder, setCatOrder] = useState([]); // persistierte Kategorie-Reihenfolge
+  const [sortMode, setSortMode] = useState(false);
 
   async function reload() {
     if (!categories.length) await loadMeta();
-    const [{ data: t }, { data: it }, { data: lg }] = await Promise.all([
+    const { data: u } = await sb.auth.getUser();
+    const [{ data: t }, { data: it }, { data: lg }, { data: prof }] = await Promise.all([
       sb.from("trips").select("*").eq("id", tripId).single(),
       sb.from("trip_items").select("*").eq("trip_id", tripId).eq("removed", false).order("created_at"),
       sb.from("trip_legs").select("*").eq("trip_id", tripId).order("position"),
+      sb.from("profiles").select("category_order").eq("id", u.user.id).single(),
     ]);
     setTrip(t); setItems(it || []); setLegs(lg || []);
+    setCatOrder(Array.isArray(prof?.category_order) ? prof.category_order : []);
+  }
+
+  async function moveCat(id, dir) {
+    const idx = (x) => { const i = catOrder.indexOf(x); return i === -1 ? 999 : i; };
+    const ids = [...categories].sort((a, b) => (idx(a.id) - idx(b.id)) || (a.sort_order - b.sort_order)).map((c) => c.id);
+    const i = ids.indexOf(id), j = i + dir;
+    if (j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    setCatOrder(ids);
+    const { data: u } = await sb.auth.getUser();
+    await sb.from("profiles").update({ category_order: ids }).eq("id", u.user.id);
   }
   useEffect(() => { reload(); }, [tripId]);
 
@@ -724,7 +756,9 @@ function TripView({ tripId, go }) {
 
   if (!trip || !items) return html`<div class="spinner"></div>`;
 
-  const groups = categories
+  const catIdx = (x) => { const i = catOrder.indexOf(x); return i === -1 ? 999 : i; };
+  const orderedCats = [...categories].sort((a, b) => (catIdx(a.id) - catIdx(b.id)) || (a.sort_order - b.sort_order));
+  const groups = orderedCats
     .map((c) => ({ cat: c, list: items.filter((x) => x.category_id === c.id) }))
     .filter((g) => g.list.length);
   const uncategorized = items.filter((x) => !x.category_id);
@@ -736,7 +770,7 @@ function TripView({ tripId, go }) {
   const firstDest = (legs.find((l) => l.destination) || {}).destination || "";
   const transports = [...new Set(legs.map((l) => l.transport).filter(Boolean))];
   const tLabel = (v) => (TRANSPORT.find((t) => t.v === v) || { l: v }).l;
-  const notes = destNotesFor(legs);
+  const info = destInfoFor(legs);
 
   return html`
     <div style="display:flex;align-items:center;gap:10px">
@@ -748,7 +782,8 @@ function TripView({ tripId, go }) {
       ${done}/${total} gepackt${weight > 0 ? ` · offen ${(weight / 1000).toFixed(1)} kg` : ""}
     </p>
     <div class="listbar">
-      <span class="lbl">Kategorien</span>
+      <span class="lbl">${sortMode ? "Reihenfolge ändern" : "Kategorien"}</span>
+      <button class=${"mini-ic" + (sortMode ? " on" : "")} title="Sortieren" onClick=${() => setSortMode((s) => !s)}>⇅</button>
       <button class="mini-ic" title="Alle ausklappen" onClick=${() => setCollapsed(new Set())}>▾</button>
       <button class="mini-ic" title="Alle einklappen" onClick=${() => setCollapsed(new Set(groups.map((g) => g.cat.id || g.cat.name)))}>▸</button>
     </div>
@@ -757,12 +792,17 @@ function TripView({ tripId, go }) {
       const key = g.cat.id || g.cat.name;
       const open = !collapsed.has(key);
       return html`
-        <div class="cathead" onClick=${() => toggle(key)}>
-          <span class=${"chev " + (open ? "" : "closed")}>▾</span>
+        <div class="cathead" onClick=${() => !sortMode && toggle(key)}>
+          ${!sortMode && html`<span class=${"chev " + (open ? "" : "closed")}>▾</span>`}
           <span>${g.cat.icon || "•"}</span><span>${g.cat.name}</span>
-          <span class="count">${g.list.filter((x) => x.packed).length}/${g.list.length}</span>
+          ${sortMode && g.cat.id
+            ? html`<span style="margin-left:auto;display:flex;gap:6px">
+                <button class="mini-ic" onClick=${(e) => { e.stopPropagation(); moveCat(g.cat.id, -1); }}>▲</button>
+                <button class="mini-ic" onClick=${(e) => { e.stopPropagation(); moveCat(g.cat.id, 1); }}>▼</button>
+              </span>`
+            : html`<span class="count">${g.list.filter((x) => x.packed).length}/${g.list.length}</span>`}
         </div>
-        ${open &&
+        ${open && !sortMode &&
           html`
             <div class="card" style="padding:6px 14px">
               ${g.list.map((x) => html`
@@ -798,11 +838,14 @@ function TripView({ tripId, go }) {
         ${firstDest ? firstDest : "Ziel offen"} · ${daysBetween(trip.start_date, trip.end_date)} Tage${transports.length ? " · " + transports.map(tLabel).join(", ") : ""}
       </p>
       <${WeatherPanel} destination=${firstDest} start=${trip.start_date} end=${trip.end_date} />
-      ${notes.length > 0 && html`
+      ${info.adapter && html`
+        <p style="margin:.6rem 0"><strong>🔌 Reiseadapter:</strong> ${info.adapter} ·
+          <a href=${amazonSearch("Reiseadapter " + info.adapter)} target="_blank" rel="noopener">bei Amazon suchen</a></p>`}
+      ${info.notes.length > 0 && html`
         <div style="margin-top:10px">
           <strong>📌 Besonderheiten am Ziel</strong>
           <ul class="list-clean" style="margin:8px 0 0">
-            ${notes.map((n) => html`<li style="padding:4px 0;display:flex;gap:8px"><span>•</span><span>${n}</span></li>`)}
+            ${info.notes.map((n) => html`<li style="padding:4px 0;display:flex;gap:8px"><span>•</span><span>${n}</span></li>`)}
           </ul>
         </div>`}
       <p class="muted" style="margin:12px 0 0;font-size:.78rem">
