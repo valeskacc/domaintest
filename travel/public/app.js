@@ -63,16 +63,23 @@ function generateList(items, trip, legs) {
   if (trip.purpose === "business") tags.add("business");
   let flugHandOnly = false;
   let enoughLuggage = false; // Auto, Bahn oder Flug MIT Aufgabegepäck
+  let motorrad = false;
   for (const leg of legs) {
     if (leg.transport) tags.add(leg.transport);
     for (const t of accommodationTags(leg.accommodation)) tags.add(t);
     for (const a of leg.activities || []) tags.add(a);
     if (leg.transport === "flug" && leg.hand_luggage_only) flugHandOnly = true;
+    if (leg.transport === "motorrad") motorrad = true;
     if (leg.transport === "auto" || leg.transport === "bahn" ||
         (leg.transport === "flug" && !leg.hand_luggage_only)) enoughLuggage = true;
   }
+  // Motorrad ohne sonstiges großes Gepäck -> Sperriges weglassen
+  const bulkyBlocked = motorrad && !enoughLuggage;
   const days = daysBetween(trip.start_date, trip.end_date);
-  const chosen = items.filter((it) => (it.tags || []).some((t) => tags.has(t))).map((it) => toRow(it, days));
+  const chosen = items
+    .filter((it) => (it.tags || []).some((t) => tags.has(t)))
+    .filter((it) => !(bulkyBlocked && it.bulky))
+    .map((it) => toRow(it, days));
 
   // Zusatzregeln, die Items unabhängig von Tags erzwingen
   const present = new Set(chosen.map((x) => x.name.toLowerCase()));
@@ -214,6 +221,40 @@ function WeatherPanel({ destination, start, end }) {
   return html`<p style="margin:.2rem 0"><strong>🌡️ ${st.place}:</strong> ${st.min}–${st.max}°C · Regen bis ${st.rain}%<br /><span class="muted">${hint}</span></p>`;
 }
 
+/* ---------- Orts-Autocomplete (Open-Meteo Geocoding, kein API-Key) ---------- */
+function DestInput({ value, onChange }) {
+  const [q, setQ] = useState(value || "");
+  const [sug, setSug] = useState([]);
+  const [open, setOpen] = useState(false);
+  useEffect(() => { setQ(value || ""); }, [value]);
+  useEffect(() => {
+    if (!q || q.length < 2) { setSug([]); return; }
+    let alive = true;
+    const id = setTimeout(async () => {
+      try {
+        const g = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=5&language=de`).then((r) => r.json());
+        if (alive) setSug((g.results || []).map((r) => ({
+          label: [r.name, r.admin1, r.country].filter(Boolean).join(", "),
+          short: [r.name, r.country].filter(Boolean).join(", "),
+        })));
+      } catch (_e) { if (alive) setSug([]); }
+    }, 300);
+    return () => { alive = false; clearTimeout(id); };
+  }, [q]);
+  return html`
+    <div style="position:relative">
+      <input placeholder="Ort suchen… z. B. El Gouna" value=${q}
+             onInput=${(e) => { setQ(e.target.value); onChange(e.target.value); setOpen(true); }}
+             onFocus=${() => setOpen(true)}
+             onBlur=${() => setTimeout(() => setOpen(false), 150)} />
+      ${open && sug.length > 0 && html`
+        <div class="suggest">
+          ${sug.map((s) => html`
+            <div class="suggest-item" onMouseDown=${() => { setQ(s.short); onChange(s.short); setSug([]); setOpen(false); }}>${s.label}</div>`)}
+        </div>`}
+    </div>`;
+}
+
 /* ---------- App ---------- */
 function App() {
   const [session, setSession] = useState(undefined); // undefined=lädt, null=logged out
@@ -238,14 +279,14 @@ function App() {
   const go = (v) => setView(v);
   return html`
     <header class="appbar">
-      <div class="title">🧳 Packassistent</div>
+      <div class="title" style="cursor:pointer" onClick=${() => go({ name: "home" })}>🧳 Packassistent</div>
       ${profile?.role === "admin" &&
         html`<button class="ghost" onClick=${() => go({ name: "admin" })}>Nutzerverwaltung</button>`}
       <button class="ghost" onClick=${() => sb.auth.signOut()}>Logout</button>
     </header>
     <main>
       ${view.name === "home" && html`<${Home} go=${go} />`}
-      ${view.name === "wizard" && html`<${Wizard} go=${go} />`}
+      ${view.name === "wizard" && html`<${Wizard} go=${go} editId=${view.editId} />`}
       ${view.name === "trip" && html`<${TripView} tripId=${view.tripId} go=${go} />`}
       ${view.name === "admin" && html`<${Admin} go=${go} />`}
     </main>
@@ -361,7 +402,7 @@ function TripCard({ t, go, reload }) {
 function emptyLeg() {
   return { destination: "", accommodation: "Hotel", transport: "flug", hand_luggage_only: false, activities: [] };
 }
-function Wizard({ go }) {
+function Wizard({ go, editId }) {
   const [title, setTitle] = useState("");
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
@@ -378,6 +419,26 @@ function Wizard({ go }) {
       .order("start_date", { ascending: false, nullsFirst: false })
       .then(({ data }) => setTrips(data || []));
   }, []);
+
+  // Bearbeiten-Modus: bestehende Reise + Etappen vorbefüllen
+  useEffect(() => {
+    if (!editId) return;
+    (async () => {
+      const [{ data: t }, { data: lg }] = await Promise.all([
+        sb.from("trips").select("*").eq("id", editId).single(),
+        sb.from("trip_legs").select("*").eq("trip_id", editId).order("position"),
+      ]);
+      if (t) {
+        setTitle(t.title); setStart(t.start_date || ""); setEnd(t.end_date || "");
+        setPurpose(t.purpose || "privat"); setPersons(t.persons || 1);
+      }
+      if (lg && lg.length) setLegs(lg.map((l) => ({
+        destination: l.destination || "", accommodation: l.accommodation || "Hotel",
+        transport: l.transport || "flug", hand_luggage_only: !!l.hand_luggage_only,
+        activities: l.activities || [],
+      })));
+    })();
+  }, [editId]);
 
   const setLeg = (i, patch) => setLegs((ls) => ls.map((l, k) => (k === i ? { ...l, ...patch } : l)));
   // Anlass "Business" markiert automatisch die Aktivität "Business" in allen Etappen
@@ -398,25 +459,42 @@ function Wizard({ go }) {
     });
   const days = daysBetween(start, end);
 
+  const legRows = (tid) => legs.map((l, i) => ({
+    trip_id: tid, position: i + 1, destination: l.destination, accommodation: l.accommodation,
+    transport: l.transport, hand_luggage_only: l.hand_luggage_only, activities: l.activities,
+  }));
+
   async function create() {
     setErr("");
     if (!title.trim()) return setErr("Bitte einen Titel angeben.");
     if (!start || !end) return setErr("Bitte Zeitraum wählen.");
     if (end < start) return setErr("Enddatum liegt vor Startdatum.");
     setBusy(true);
+    const { items } = await loadMeta();
+    const tripData = { title: title.trim(), start_date: start, end_date: end, purpose, persons };
+
+    if (editId) {
+      // Bearbeiten: Reise + Etappen aktualisieren, Liste neu berechnen.
+      await sb.from("trips").update(tripData).eq("id", editId);
+      await sb.from("trip_legs").delete().eq("trip_id", editId);
+      await sb.from("trip_legs").insert(legRows(editId));
+      const { data: existing } = await sb.from("trip_items").select("*").eq("trip_id", editId).eq("removed", false);
+      // Gepackte & selbst hinzugefügte Items behalten, alte Vorschläge verwerfen
+      const keepNames = new Set((existing || []).filter((x) => x.packed || x.source === "manual").map((x) => x.name.toLowerCase()));
+      const throwaway = (existing || []).filter((x) => !x.packed && x.source !== "manual");
+      if (throwaway.length) await sb.from("trip_items").delete().in("id", throwaway.map((x) => x.id));
+      const fresh = generateList(items, tripData, legs).filter((x) => !keepNames.has(x.name.toLowerCase()));
+      if (fresh.length) await sb.from("trip_items").insert(fresh.map((x) => ({ ...x, trip_id: editId })));
+      setBusy(false);
+      go({ name: "trip", tripId: editId });
+      return;
+    }
+
     const { data: user } = await sb.auth.getUser();
     const { data: trip, error } = await sb.from("trips")
-      .insert({ user_id: user.user.id, title: title.trim(), start_date: start, end_date: end, purpose, persons })
-      .select().single();
+      .insert({ user_id: user.user.id, ...tripData }).select().single();
     if (error) { setBusy(false); return setErr(error.message); }
-    await sb.from("trip_legs").insert(
-      legs.map((l, i) => ({
-        trip_id: trip.id, position: i + 1, destination: l.destination,
-        accommodation: l.accommodation, transport: l.transport,
-        hand_luggage_only: l.hand_luggage_only, activities: l.activities,
-      }))
-    );
-    const { items } = await loadMeta();
+    await sb.from("trip_legs").insert(legRows(trip.id));
     let list = generateList(items, trip, legs);
     if (template) {
       // Auf bestehende Reise aufbauen: deren Items zuerst, dann neue Vorschläge ergänzen
@@ -440,7 +518,7 @@ function Wizard({ go }) {
     <div style="display:flex;align-items:center;gap:10px">
       <button class="ghost" style="width:auto;min-height:34px;padding:5px 10px;font-size:.8rem"
               onClick=${() => go({ name: "home" })}>‹ Zurück</button>
-      <h1 style="flex:1;font-size:1.3rem;margin:0">Neue Reise</h1>
+      <h1 style="flex:1;font-size:1.3rem;margin:0">${editId ? "Reise bearbeiten" : "Neue Reise"}</h1>
     </div>
 
     <div class="card">
@@ -465,7 +543,7 @@ function Wizard({ go }) {
       </div>
     </div>
 
-    ${trips.length > 0 && html`
+    ${!editId && trips.length > 0 && html`
       <div class="card">
         <label>Auf bestehende Reise aufbauen (optional)</label>
         <select value=${template} onChange=${(e) => setTemplate(e.target.value)}>
@@ -482,7 +560,7 @@ function Wizard({ go }) {
           ${legs.length > 1 && html`<button class="danger" style="width:auto" onClick=${() => setLegs(legs.filter((_, k) => k !== i))}>Entfernen</button>`}
         </div>
         <label>Reiseziel</label>
-        <input placeholder="z. B. El Gouna" value=${leg.destination} onInput=${(e) => setLeg(i, { destination: e.target.value })} />
+        <${DestInput} value=${leg.destination} onChange=${(v) => setLeg(i, { destination: v })} />
         <label>Unterkunft</label>
         <select value=${leg.accommodation} onChange=${(e) => setLeg(i, { accommodation: e.target.value })}>
           ${ACCOMMODATION.map((a) => html`<option>${a}</option>`)}
@@ -510,7 +588,7 @@ function Wizard({ go }) {
 
     <button class="primary block" style="min-height:56px;font-size:1.05rem;margin-top:8px"
             disabled=${busy} onClick=${create}>
-      ${busy ? "Erstelle…" : "Packliste erstellen"}
+      ${busy ? "Speichere…" : editId ? "Änderungen übernehmen" : "Packliste erstellen"}
     </button>
     <div style="height:24px"></div>
   `;
@@ -579,10 +657,16 @@ function TripView({ tripId, go }) {
     <div style="display:flex;align-items:center;gap:10px">
       <button class="ghost" style="width:auto" onClick=${() => go({ name: "home" })}>‹</button>
       <h1 style="flex:1;font-size:1.25rem">${trip.title}</h1>
+      <button class="mini-ic" title="Bedingungen ändern" onClick=${() => go({ name: "wizard", editId: tripId })}>✎</button>
     </div>
     <p class="muted">
       ${done}/${total} gepackt${weight > 0 ? ` · offen ${(weight / 1000).toFixed(1)} kg` : ""}
     </p>
+    <div class="listbar">
+      <span class="lbl">Kategorien</span>
+      <button class="mini-ic" title="Alle ausklappen" onClick=${() => setCollapsed(new Set())}>▾</button>
+      <button class="mini-ic" title="Alle einklappen" onClick=${() => setCollapsed(new Set(groups.map((g) => g.cat.id || g.cat.name)))}>▸</button>
+    </div>
 
     ${groups.map((g) => {
       const key = g.cat.id || g.cat.name;
@@ -592,9 +676,6 @@ function TripView({ tripId, go }) {
           <span class=${"chev " + (open ? "" : "closed")}>▾</span>
           <span>${g.cat.icon || "•"}</span><span>${g.cat.name}</span>
           <span class="count">${g.list.filter((x) => x.packed).length}/${g.list.length}</span>
-          ${g.cat.id &&
-            html`<button class="catadd" title="Hinzufügen"
-                   onClick=${(e) => { e.stopPropagation(); setAddCat(key); setAddText(""); if (!open) toggle(key); }}>＋</button>`}
         </div>
         ${open &&
           html`
@@ -615,11 +696,13 @@ function TripView({ tripId, go }) {
               ${addCat === key &&
                 html`
                   <div class="addrow">
-                    <input autofocus placeholder="Hinzufügen…" value=${addText}
+                    <input autofocus placeholder="Was fehlt hier noch?" value=${addText}
                            onInput=${(e) => setAddText(e.target.value)}
                            onKeyDown=${(e) => e.key === "Enter" && addToCat(g.cat.id)} />
                     <button class="primary" onClick=${() => addToCat(g.cat.id)}>OK</button>
                   </div>`}
+              ${g.cat.id && addCat !== key &&
+                html`<button class="addlink" onClick=${() => { setAddCat(key); setAddText(""); }}>＋ Item hinzufügen</button>`}
             </div>`}
       `;
     })}
