@@ -350,6 +350,7 @@ function App() {
   const [session, setSession] = useState(undefined); // undefined=lädt, null=logged out
   const [profile, setProfile] = useState(null);
   const [view, setView] = useState({ name: "home" });
+  const [pending, setPending] = useState([]); // abgeschlossene Reisen ohne Rückblick
 
   useEffect(() => {
     sb.auth.getSession().then(({ data }) => setSession(data.session ?? null));
@@ -363,6 +364,16 @@ function App() {
       .then(({ data }) => setProfile(data));
   }, [session]);
 
+  // Offene Rückblicke: Reise vorbei (end_date < heute) und noch nicht reviewt
+  useEffect(() => {
+    if (!session) { setPending([]); return; }
+    const today = new Date().toISOString().slice(0, 10);
+    sb.from("trips").select("id,title,end_date,reviewed_at")
+      .lt("end_date", today).is("reviewed_at", null)
+      .order("end_date", { ascending: false })
+      .then(({ data }) => setPending(data || []));
+  }, [session, view]);
+
   if (session === undefined) return html`<div class="spinner"></div>`;
   if (!session) return html`<${Login} />`;
 
@@ -370,6 +381,8 @@ function App() {
   return html`
     <header class="appbar">
       <div class="title" style="cursor:pointer" onClick=${() => go({ name: "home" })}>🧳 Packassistent</div>
+      ${pending.length > 0 &&
+        html`<button class="ghost bell" title="Reise-Rückblick offen" onClick=${() => go({ name: "review", tripId: pending[0].id })}>🔔<span class="belldot">${pending.length}</span></button>`}
       ${profile?.role === "admin" &&
         html`<button class="ghost" onClick=${() => go({ name: "admin" })}>Nutzerverwaltung</button>`}
       <button class="ghost" onClick=${() => sb.auth.signOut()}>Logout</button>
@@ -703,6 +716,8 @@ function TripView({ tripId, go }) {
   const [addText, setAddText] = useState("");
   const [catOrder, setCatOrder] = useState([]); // persistierte Kategorie-Reihenfolge
   const [sortMode, setSortMode] = useState(false);
+  const [query, setQuery] = useState("");
+  const [unpackedOnly, setUnpackedOnly] = useState(false);
 
   async function reload() {
     if (!categories.length) await loadMeta();
@@ -781,6 +796,10 @@ function TripView({ tripId, go }) {
     <p class="muted">
       ${done}/${total} gepackt${weight > 0 ? ` · offen ${(weight / 1000).toFixed(1)} kg` : ""}
     </p>
+    <input style="margin-top:4px" placeholder="🔍 Item suchen…" value=${query} onInput=${(e) => setQuery(e.target.value)} />
+    <button class=${"ghost block " + (unpackedOnly ? "toggle-on" : "")} style="margin-top:8px" onClick=${() => setUnpackedOnly((v) => !v)}>
+      ${unpackedOnly ? "☑ Nur noch nicht gepackte" : "☐ Nur noch nicht gepackte"}
+    </button>
     <div class="listbar">
       <span class="lbl">${sortMode ? "Reihenfolge ändern" : "Kategorien"}</span>
       <button class=${"mini-ic" + (sortMode ? " on" : "")} title="Sortieren" onClick=${() => setSortMode((s) => !s)}>⇅</button>
@@ -790,7 +809,10 @@ function TripView({ tripId, go }) {
 
     ${groups.map((g) => {
       const key = g.cat.id || g.cat.name;
-      const open = !collapsed.has(key);
+      const filtering = query || unpackedOnly;
+      const shown = g.list.filter((x) => (!unpackedOnly || !x.packed) && (!query || x.name.toLowerCase().includes(query.toLowerCase())));
+      if (filtering && shown.length === 0) return null;
+      const open = filtering || !collapsed.has(key);
       return html`
         <div class="cathead" onClick=${() => !sortMode && toggle(key)}>
           ${!sortMode && html`<span class=${"chev " + (open ? "" : "closed")}>▾</span>`}
@@ -805,7 +827,7 @@ function TripView({ tripId, go }) {
         ${open && !sortMode &&
           html`
             <div class="card" style="padding:6px 14px">
-              ${g.list.map((x) => html`
+              ${shown.map((x) => html`
                 <div class="pitem">
                   <button class=${"check " + (x.packed ? "on" : "")} onClick=${() => patch(x.id, { packed: !x.packed })}>
                     ${x.packed ? "✓" : ""}
@@ -979,26 +1001,44 @@ function Review({ tripId, go }) {
   const [trip, setTrip] = useState(null);
   const [legs, setLegs] = useState([]);
   const [items, setItems] = useState(null);
-  const [marks, setMarks] = useState({}); // trip_item.id -> 'used' | 'unused'
+  const [catOrder, setCatOrder] = useState([]);
+  const [unused, setUnused] = useState({}); // trip_item.id -> true (= unnötig)
   const [missed, setMissed] = useState([]);
   const [mName, setMName] = useState("");
   const [mCat, setMCat] = useState("");
+  const [collapsed, setCollapsed] = useState(() => new Set());
+  const [sortMode, setSortMode] = useState(false);
+  const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     (async () => {
       if (!categories.length) await loadMeta();
       setMCat(categories[0]?.id || "");
-      const [{ data: t }, { data: lg }, { data: it }] = await Promise.all([
+      const { data: u } = await sb.auth.getUser();
+      const [{ data: t }, { data: lg }, { data: it }, { data: prof }] = await Promise.all([
         sb.from("trips").select("*").eq("id", tripId).single(),
         sb.from("trip_legs").select("*").eq("trip_id", tripId),
-        sb.from("trip_items").select("*").eq("trip_id", tripId).eq("removed", false).order("name"),
+        sb.from("trip_items").select("*").eq("trip_id", tripId).eq("removed", false).order("created_at"),
+        sb.from("profiles").select("category_order").eq("id", u.user.id).single(),
       ]);
       setTrip(t); setLegs(lg || []); setItems(it || []);
+      setCatOrder(Array.isArray(prof?.category_order) ? prof.category_order : []);
     })();
   }, [tripId]);
 
-  const setMark = (id, v) => setMarks((m) => ({ ...m, [id]: m[id] === v ? undefined : v }));
+  const toggleUnused = (id) => setUnused((m) => ({ ...m, [id]: !m[id] }));
+  const toggle = (key) => setCollapsed((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
+  async function moveCat(id, dir) {
+    const idx = (x) => { const i = catOrder.indexOf(x); return i === -1 ? 999 : i; };
+    const ids = [...categories].sort((a, b) => (idx(a.id) - idx(b.id)) || (a.sort_order - b.sort_order)).map((c) => c.id);
+    const i = ids.indexOf(id), j = i + dir;
+    if (j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    setCatOrder(ids);
+    const { data: u } = await sb.auth.getUser();
+    await sb.from("profiles").update({ category_order: ids }).eq("id", u.user.id);
+  }
   function addMissed() {
     if (!mName.trim()) return;
     setMissed((xs) => [...xs, { name: mName.trim(), category_id: mCat }]);
@@ -1008,12 +1048,11 @@ function Review({ tripId, go }) {
     setBusy(true);
     const ctx = contextTags(trip, legs);
     const { data: u } = await sb.auth.getUser();
-    const rows = [];
-    for (const it of items) {
-      const v = marks[it.id];
-      if (v === "used" || v === "unused")
-        rows.push({ user_id: u.user.id, item_name: it.name, kind: v, tags: ctx, category_id: it.category_id });
-    }
+    // Alles, was NICHT als unnötig markiert wurde, gilt als gebraucht
+    const rows = items.map((it) => ({
+      user_id: u.user.id, item_name: it.name, kind: unused[it.id] ? "unused" : "used",
+      tags: ctx, category_id: it.category_id,
+    }));
     for (const m of missed)
       rows.push({ user_id: u.user.id, item_name: m.name, kind: "missed", tags: ctx, category_id: m.category_id });
     if (rows.length) await sb.from("pack_signals").insert(rows);
@@ -1023,21 +1062,57 @@ function Review({ tripId, go }) {
   }
 
   if (!trip || !items) return html`<div class="spinner"></div>`;
+
+  const catIdx = (x) => { const i = catOrder.indexOf(x); return i === -1 ? 999 : i; };
+  const orderedCats = [...categories].sort((a, b) => (catIdx(a.id) - catIdx(b.id)) || (a.sort_order - b.sort_order));
+  const groups = orderedCats
+    .map((c) => ({ cat: c, list: items.filter((x) => x.category_id === c.id) }))
+    .filter((g) => g.list.length);
+  const uncat = items.filter((x) => !x.category_id);
+  if (uncat.length) groups.push({ cat: { id: null, name: "Sonstiges", icon: "📦" }, list: uncat });
+
   return html`
     <div style="display:flex;align-items:center;gap:10px">
       <button class="ghost" style="width:auto" onClick=${() => go({ name: "trip", tripId })}>‹</button>
       <h1 style="flex:1;font-size:1.25rem">Rückblick</h1>
     </div>
-    <p class="muted">Was hast du gebraucht oder nicht? Das verbessert deine künftigen Vorschläge – kontextbezogen zu dieser Reiseart.</p>
-
-    <div class="card" style="padding:6px 14px">
-      ${items.map((it) => html`
-        <div class="pitem">
-          <span class="name" style="flex:1">${it.name}</span>
-          <button class=${"tag-btn " + (marks[it.id] === "used" ? "on-ok" : "")} onClick=${() => setMark(it.id, "used")}>gebraucht</button>
-          <button class=${"tag-btn " + (marks[it.id] === "unused" ? "on-bad" : "")} onClick=${() => setMark(it.id, "unused")}>unnötig</button>
-        </div>`)}
+    <p class="muted">Markiere nur, was du <strong>nicht</strong> gebraucht hast – alles andere gilt als gebraucht.</p>
+    <input style="margin-top:4px" placeholder="🔍 Item suchen…" value=${query} onInput=${(e) => setQuery(e.target.value)} />
+    <div class="listbar">
+      <span class="lbl">${sortMode ? "Reihenfolge ändern" : "Kategorien"}</span>
+      <button class=${"mini-ic" + (sortMode ? " on" : "")} title="Sortieren" onClick=${() => setSortMode((s) => !s)}>⇅</button>
+      <button class="mini-ic" title="Alle ausklappen" onClick=${() => setCollapsed(new Set())}>▾</button>
+      <button class="mini-ic" title="Alle einklappen" onClick=${() => setCollapsed(new Set(groups.map((g) => g.cat.id || g.cat.name)))}>▸</button>
     </div>
+
+    ${groups.map((g) => {
+      const key = g.cat.id || g.cat.name;
+      const shown = g.list.filter((x) => !query || x.name.toLowerCase().includes(query.toLowerCase()));
+      if (query && shown.length === 0) return null;
+      const open = query || !collapsed.has(key);
+      return html`
+        <div class="cathead" onClick=${() => !sortMode && toggle(key)}>
+          ${!sortMode && html`<span class=${"chev " + (open ? "" : "closed")}>▾</span>`}
+          <span>${g.cat.icon || "•"}</span><span>${g.cat.name}</span>
+          ${sortMode && g.cat.id
+            ? html`<span style="margin-left:auto;display:flex;gap:6px">
+                <button class="mini-ic" onClick=${(e) => { e.stopPropagation(); moveCat(g.cat.id, -1); }}>▲</button>
+                <button class="mini-ic" onClick=${(e) => { e.stopPropagation(); moveCat(g.cat.id, 1); }}>▼</button>
+              </span>`
+            : html`<span class="count">${g.list.filter((x) => unused[x.id]).length} unnötig</span>`}
+        </div>
+        ${open && !sortMode && html`
+          <div class="card" style="padding:6px 14px">
+            ${shown.map((x) => html`
+              <div class="pitem">
+                <span class=${"name " + (unused[x.id] ? "done" : "")} style="flex:1">${x.name}</span>
+                <button class=${"tag-btn " + (unused[x.id] ? "on-bad" : "")} onClick=${() => toggleUnused(x.id)}>
+                  ${unused[x.id] ? "unnötig" : "gebraucht"}
+                </button>
+              </div>`)}
+          </div>`}
+      `;
+    })}
 
     <h2>Etwas vermisst?</h2>
     <div class="card">

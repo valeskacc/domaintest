@@ -62,6 +62,10 @@
     header.appbar button { width: auto; min-height: 32px; padding: 5px 10px;
                            font-size: .75rem; font-weight: 500; color: var(--muted);
                            border-color: var(--border); }
+    header.appbar button.bell { position: relative; font-size: 1rem; padding: 5px 8px; }
+    .belldot { position: absolute; top: -3px; right: -3px; min-width: 16px; height: 16px;
+               background: var(--danger); color: #2a0f0d; border-radius: 999px; font-size: .62rem;
+               display: grid; place-items: center; font-weight: 700; padding: 0 3px; }
 
     main { padding: 16px; padding-bottom: calc(96px + var(--safe-b)); }
 
@@ -150,6 +154,7 @@
     .mini-ic { width: 36px; min-height: 36px; flex: 0 0 auto; padding: 0; border-radius: 9px;
                background: transparent; border: 1px solid var(--border); font-size: 1rem; }
     .mini-ic.on { background: var(--primary); color: var(--primary-ink); border-color: transparent; }
+    button.toggle-on { border-color: var(--primary); color: var(--primary); }
     .center { text-align: center; }
     .spinner { margin: 40px auto; width: 28px; height: 28px; border: 3px solid var(--border);
                border-top-color: var(--primary); border-radius: 50%; animation: spin 1s linear infinite; }
