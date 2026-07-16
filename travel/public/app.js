@@ -844,7 +844,7 @@ function TripView({ tripId, go }) {
                         <button onClick=${() => patch(x.id, { qty: x.qty + 1 })}>+</button>
                       </div>`
                     : html`<button class="qty-add" title="Anzahl erhöhen" onClick=${() => patch(x.id, { qty: 2 })}>+</button>`}
-                  <button class="danger" style="width:auto" onClick=${() => remove(x)}>✕</button>
+                  <button class="danger" onClick=${() => remove(x)}>✕</button>
                 </div>`)}
               ${addCat === key &&
                 html`
