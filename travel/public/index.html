@@ -3,39 +3,24 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#2a3038" />
+  <meta name="theme-color" content="#000000" />
   <title>Packassistent</title>
   <style>
-    /* CI: "Soft Summer / Soft Autumn" – warmes Dunkel-Theme als Standard */
+    /* CI: Schwarz + Türkis (fest, kein Hell-Modus) */
     :root {
-      --bg: #2a3038;          /* dunkles Warm-Navy */
-      --card: #343b45;        /* Warm-Navy Fläche */
-      --text: #f3ecdd;        /* Creme */
-      --muted: #b3a992;       /* Warm Gray / Taupe */
-      --border: #444b56;
-      --primary: #8fb39b;     /* Sage */
-      --primary-ink: #1e2b25;
-      --danger: #d68d84;      /* Muted Rose / Coral */
-      --ok: #7aa6ad;          /* Dusty / Smokey Blue */
-      --gold: #c9a24b;        /* Gold-Akzent */
+      --bg: #000000;
+      --card: #101a19;
+      --text: #eaf6f4;
+      --muted: #7e9997;
+      --border: #223330;
+      --primary: #2fd6c6;     /* Türkis */
+      --primary-ink: #04231f;
+      --danger: #ff6b6b;
+      --ok: #2fd6c6;
+      --gold: #2fd6c6;        /* Titel = Türkis */
       --radius: 16px;
       --safe-b: env(safe-area-inset-bottom, 0px);
       --safe-t: env(safe-area-inset-top, 0px);
-    }
-    /* Helles Creme-Theme aus derselben Palette (nur wenn Gerät hell will) */
-    @media (prefers-color-scheme: light) {
-      :root {
-        --bg: #f4eee1;        /* Beige / Creme */
-        --card: #fffdf6;
-        --text: #45423a;      /* dunkles Taupe */
-        --muted: #8a8272;     /* Warm Gray */
-        --border: #e5ddca;
-        --primary: #5f9079;   /* Sage (kräftiger für Kontrast) */
-        --primary-ink: #ffffff;
-        --danger: #bd6f68;    /* Coral / Muted Purple */
-        --ok: #5a8f97;        /* Smokey Blue */
-        --gold: #b8912f;
-      }
     }
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     html, body { margin: 0; padding: 0; }
@@ -87,7 +72,7 @@
     input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); border-color: var(--primary); }
 
     button { cursor: pointer; border: 1px solid var(--border); background: var(--card); font-weight: 600; }
-    button.primary { background: var(--primary); color: var(--primary-ink); border-color: transparent; }
+    button.primary { background: var(--primary); color: var(--primary-ink); border-color: transparent; border-radius: 999px; }
     button.ghost { background: transparent; }
     button.danger { color: var(--danger); border-color: transparent; background: transparent; }
     button.block { width: 100%; }
@@ -114,8 +99,8 @@
              border-bottom: 1px solid var(--border); }
     .pitem:last-child { border-bottom: 0; }
     .pitem .check { width: 26px; height: 26px; min-height: 26px; flex: 0 0 auto; padding: 0;
-                    border-radius: 8px; display: grid; place-items: center; }
-    .pitem .check.on { background: var(--ok); color: #fff; border-color: transparent; }
+                    border-radius: 50%; border: 2px solid var(--primary); display: grid; place-items: center; }
+    .pitem .check.on { background: var(--ok); color: var(--primary-ink); border-color: transparent; }
     .pitem .name { flex: 1; }
     .pitem .name.done { text-decoration: line-through; color: var(--muted); }
     .qty { display: flex; align-items: center; gap: 6px; }
