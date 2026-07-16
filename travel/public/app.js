@@ -837,11 +837,13 @@ function TripView({ tripId, go }) {
                     ${x.packed ? "✓" : ""}
                   </button>
                   <span class=${"name " + (x.packed ? "done" : "")}>${x.name}</span>
-                  <div class="qty">
-                    <button onClick=${() => patch(x.id, { qty: Math.max(1, x.qty - 1) })}>−</button>
-                    <span>${x.qty}</span>
-                    <button onClick=${() => patch(x.id, { qty: x.qty + 1 })}>+</button>
-                  </div>
+                  ${x.qty > 1
+                    ? html`<div class="qty">
+                        <button onClick=${() => patch(x.id, { qty: Math.max(1, x.qty - 1) })}>−</button>
+                        <span>${x.qty}</span>
+                        <button onClick=${() => patch(x.id, { qty: x.qty + 1 })}>+</button>
+                      </div>`
+                    : html`<button class="qty-add" title="Anzahl erhöhen" onClick=${() => patch(x.id, { qty: 2 })}>+</button>`}
                   <button class="danger" style="width:auto" onClick=${() => remove(x)}>✕</button>
                 </div>`)}
               ${addCat === key &&
