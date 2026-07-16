@@ -177,6 +177,13 @@
                background: rgba(0,0,0,.45); color: #fff; font-size: .9rem; }
     .tile .t-badge { position: absolute; top: 8px; left: 8px; background: var(--primary); color: var(--primary-ink);
                      font-size: .72rem; font-weight: 700; padding: 3px 8px; border-radius: 999px; }
+    /* Modal */
+    .modal-overlay { position: fixed; inset: 0; z-index: 100; background: rgba(0,0,0,.6);
+                     display: flex; align-items: center; justify-content: center; padding: 20px;
+                     backdrop-filter: blur(3px); }
+    .modal { width: 100%; max-width: 420px; background: var(--card); border: 1px solid var(--border);
+             border-radius: 18px; padding: 22px; box-shadow: 0 20px 60px rgba(0,0,0,.55); }
+    .modal h3 { font-size: 1.1rem; }
     /* Desktop/Laptop: mehr Breite + mehrspaltige Kategorien (alles auf einen Blick) */
     .catblock { break-inside: avoid; -webkit-column-break-inside: avoid; }
     .wizcards > .card { break-inside: avoid; -webkit-column-break-inside: avoid; }

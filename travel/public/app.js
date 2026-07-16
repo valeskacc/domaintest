@@ -540,6 +540,8 @@ function Wizard({ go, editId }) {
   const [legs, setLegs] = useState([emptyLeg()]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [notes, setNotes] = useState("");
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [trips, setTrips] = useState([]);
   const [template, setTemplate] = useState(""); // optionale Vorlage-Reise
 
@@ -559,7 +561,7 @@ function Wizard({ go, editId }) {
       ]);
       if (t) {
         setTitle(t.title); setStart(t.start_date || ""); setEnd(t.end_date || "");
-        setPurpose(t.purpose || "privat"); setPersons(t.persons || 1);
+        setPurpose(t.purpose || "privat"); setPersons(t.persons || 1); setNotes(t.notes || "");
       }
       if (lg && lg.length) setLegs(lg.map((l) => ({
         destination: l.destination || "", accommodation: l.accommodation || "Hotel",
@@ -604,30 +606,25 @@ function Wizard({ go, editId }) {
     if (!title.trim()) return setErr("Bitte einen Titel angeben.");
     if (!start || !end) return setErr("Bitte Zeitraum wählen.");
     if (end < start) return setErr("Enddatum liegt vor Startdatum.");
+    if (editId) { setConfirmOpen(true); return; } // Beim Bearbeiten erst nachfragen
+    persist(false);
+  }
+
+  async function persist(keepList) {
+    setConfirmOpen(false);
     setBusy(true);
     const { items } = await loadMeta();
     const { data: signals } = await sb.from("pack_signals").select("*");
-    const tripData = { title: title.trim(), start_date: start, end_date: end, purpose, persons };
+    const tripData = { title: title.trim(), start_date: start, end_date: end, purpose, persons, notes: notes.trim() || null };
 
     if (editId) {
-      // Sicherheitsabfrage: Liste behalten (Standard) oder neu berechnen?
-      const keepList = confirm(
-        "Deine bearbeitete Packliste behalten?\n\n" +
-        "OK = Liste behalten (nur Reisedaten & Name speichern)\n" +
-        "Abbrechen = Liste an die neuen Bedingungen neu berechnen"
-      );
       await sb.from("trips").update(tripData).eq("id", editId);
       await sb.from("trip_legs").delete().eq("trip_id", editId);
       await sb.from("trip_legs").insert(legRows(editId));
       if (!keepList) {
-        const { data: existing } = await sb.from("trip_items").select("*").eq("trip_id", editId);
-        // Gepacktes & Eigenes behalten, Entferntes bleibt entfernt, alte Vorschläge verwerfen
-        const keepNames = new Set((existing || []).filter((x) => !x.removed && (x.packed || x.source === "manual")).map((x) => x.name.toLowerCase()));
-        const removedNames = new Set((existing || []).filter((x) => x.removed).map((x) => x.name.toLowerCase()));
-        const throwaway = (existing || []).filter((x) => !x.removed && !x.packed && x.source !== "manual");
-        if (throwaway.length) await sb.from("trip_items").delete().in("id", throwaway.map((x) => x.id));
-        const fresh = generateList(items, tripData, legs, signals)
-          .filter((x) => !keepNames.has(x.name.toLowerCase()) && !removedNames.has(x.name.toLowerCase()));
+        // Liste wiederherstellen: Itemliste auf Standard zurücksetzen
+        await sb.from("trip_items").delete().eq("trip_id", editId);
+        const fresh = generateList(items, tripData, legs, signals);
         if (fresh.length) await sb.from("trip_items").insert(fresh.map((x) => ({ ...x, trip_id: editId })));
       }
       setBusy(false);
@@ -687,6 +684,8 @@ function Wizard({ go, editId }) {
         <span>${persons}</span>
         <button onClick=${() => setPersons((n) => n + 1)}>+</button>
       </div>
+      <label>Notiz (optional)</label>
+      <textarea placeholder="z. B. Ferienwohnung – wenig mitnehmen" value=${notes} onInput=${(e) => setNotes(e.target.value)}></textarea>
     </div>
 
     ${!editId && trips.length > 0 && html`
@@ -737,6 +736,19 @@ function Wizard({ go, editId }) {
             disabled=${busy} onClick=${create}>
       ${busy ? "Speichere…" : editId ? "Änderungen übernehmen" : "Packliste erstellen"}
     </button>
+
+    ${confirmOpen && html`
+      <div class="modal-overlay" onClick=${() => setConfirmOpen(false)}>
+        <div class="modal" onClick=${(e) => e.stopPropagation()}>
+          <h3 style="margin:0 0 10px">Packliste aktualisieren</h3>
+          <p style="margin:0 0 18px">Möchtest du die vorgenommenen Änderungen deiner Packliste behalten oder die ursprüngliche Liste anhand der Auswahl wiederherstellen?</p>
+          <button class="primary block" onClick=${() => persist(true)}>Änderungen behalten</button>
+          <p class="muted" style="margin:6px 2px 16px;font-size:.82rem">Nur Anpassungen an Name, Personen, Anlass usw. werden übernommen.</p>
+          <button class="ghost block" onClick=${() => persist(false)}>Liste wiederherstellen</button>
+          <p class="muted" style="margin:6px 2px 16px;font-size:.82rem">Die Itemliste wird auf den Standard zurückgesetzt.</p>
+          <button class="ghost block" onClick=${() => setConfirmOpen(false)}>Abbrechen</button>
+        </div>
+      </div>`}
     <div style="height:24px"></div>
   `;
 }
@@ -753,6 +765,9 @@ function TripView({ tripId, go }) {
   const [sortMode, setSortMode] = useState(false);
   const [query, setQuery] = useState("");
   const [unpackedOnly, setUnpackedOnly] = useState(false);
+  const [gAdd, setGAdd] = useState(false);
+  const [gName, setGName] = useState("");
+  const [gCat, setGCat] = useState("");
 
   async function reload() {
     if (!categories.length) await loadMeta();
@@ -795,6 +810,14 @@ function TripView({ tripId, go }) {
     setItems((xs) => [...xs, data]);
     recordSignal("added", row.name, contextTags(trip, legs), catId);
     setAddText(""); setAddCat(null);
+  }
+  async function addAnywhere() {
+    if (!gName.trim() || !gCat) return;
+    const row = { trip_id: tripId, item_id: null, name: gName.trim(), category_id: gCat, qty: 1, source: "manual", packed: false, removed: false };
+    const { data } = await sb.from("trip_items").insert(row).select().single();
+    setItems((xs) => [...xs, data]);
+    recordSignal("added", row.name, contextTags(trip, legs), gCat);
+    setGName(""); setGAdd(false);
   }
   const toggle = (key) => setCollapsed((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
 
@@ -895,11 +918,28 @@ function TripView({ tripId, go }) {
     })}
     </div>
 
+    ${gAdd
+      ? html`<div class="card">
+          <label>Kategorie</label>
+          <select value=${gCat} onChange=${(e) => setGCat(e.target.value)}>
+            ${categories.map((c) => html`<option value=${c.id}>${c.icon} ${c.name}</option>`)}
+          </select>
+          <label>Item</label>
+          <input autofocus placeholder="z. B. Laufschuhe" value=${gName} onInput=${(e) => setGName(e.target.value)}
+                 onKeyDown=${(e) => e.key === "Enter" && addAnywhere()} />
+          <div class="row" style="margin-top:12px">
+            <button class="ghost" onClick=${() => setGAdd(false)}>Abbrechen</button>
+            <button class="primary" onClick=${addAnywhere}>Hinzufügen</button>
+          </div>
+        </div>`
+      : html`<button class="ghost block" onClick=${() => { setGCat(categories[0]?.id || ""); setGName(""); setGAdd(true); }}>＋ Item in beliebiger Kategorie</button>`}
+
     <h2>Infos & Entscheidungskriterien</h2>
     <div class="card">
       <p class="muted" style="margin-top:0">
         ${firstDest ? firstDest : "Ziel offen"} · ${daysBetween(trip.start_date, trip.end_date)} Tage${transports.length ? " · " + transports.map(tLabel).join(", ") : ""}
       </p>
+      ${trip.notes && html`<p style="margin:.2rem 0 .6rem">📝 ${trip.notes}</p>`}
       <${WeatherPanel} destination=${firstDest} start=${trip.start_date} end=${trip.end_date} />
       ${info.adapter && html`
         <p style="margin:.6rem 0"><strong>🔌 Reiseadapter:</strong> ${info.adapter} ·
