@@ -162,6 +162,18 @@
     .error { color: var(--danger); font-size: .9rem; }
     .list-clean { list-style: none; padding: 0; margin: 0; }
     a { color: var(--primary); }
+    /* Desktop/Laptop: mehr Breite + mehrspaltige Kategorien (alles auf einen Blick) */
+    .catblock { break-inside: avoid; -webkit-column-break-inside: avoid; }
+    @media (min-width: 900px) {
+      #app { max-width: 1040px; }
+      .actionbar { max-width: 1040px; }
+      .cats { column-count: 2; column-gap: 18px; }
+    }
+    @media (min-width: 1320px) {
+      #app { max-width: 1280px; }
+      .actionbar { max-width: 1280px; }
+      .cats { column-count: 3; }
+    }
   </style>
 </head>
 <body>

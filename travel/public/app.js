@@ -807,6 +807,7 @@ function TripView({ tripId, go }) {
       <button class="mini-ic" title="Alle einklappen" onClick=${() => setCollapsed(new Set(groups.map((g) => g.cat.id || g.cat.name)))}>▸</button>
     </div>
 
+    <div class="cats">
     ${groups.map((g) => {
       const key = g.cat.id || g.cat.name;
       const filtering = query || unpackedOnly;
@@ -814,6 +815,7 @@ function TripView({ tripId, go }) {
       if (filtering && shown.length === 0) return null;
       const open = filtering || !collapsed.has(key);
       return html`
+        <div class="catblock">
         <div class="cathead" onClick=${() => !sortMode && toggle(key)}>
           ${!sortMode && html`<span class=${"chev " + (open ? "" : "closed")}>▾</span>`}
           <span>${g.cat.icon || "•"}</span><span>${g.cat.name}</span>
@@ -851,8 +853,9 @@ function TripView({ tripId, go }) {
               ${g.cat.id && addCat !== key &&
                 html`<button class="addlink" onClick=${() => { setAddCat(key); setAddText(""); }}>＋ Item hinzufügen</button>`}
             </div>`}
-      `;
+        </div>`;
     })}
+    </div>
 
     <h2>Infos & Entscheidungskriterien</h2>
     <div class="card">
@@ -979,7 +982,9 @@ function Catalog({ go }) {
     </div>
     <p class="muted">Items sind die Regeln: Name + Menge + „erscheint bei". Beispiel FFP2-Maske: Menge 2, Auslöser „Flugzeug".</p>
     <button class="primary block" onClick=${() => openEdit(null)}>+ Neues Item / Regel</button>
+    <div class="cats">
     ${groups.map((g) => html`
+      <div class="catblock">
       <div class="cathead" style="cursor:default">
         <span>${g.cat.icon}</span><span>${g.cat.name}</span><span class="count">${g.list.length}</span>
       </div>
@@ -991,7 +996,9 @@ function Catalog({ go }) {
               ${it.qty_per_days ? it.qty_per_days + "/Tag" : "×" + it.default_qty}${(it.tags || []).length ? " · " + it.tags.join(", ") : ""}
             </span>
           </div>`)}
+      </div>
       </div>`)}
+    </div>
     <div style="height:24px"></div>
   `;
 }
@@ -1085,12 +1092,14 @@ function Review({ tripId, go }) {
       <button class="mini-ic" title="Alle einklappen" onClick=${() => setCollapsed(new Set(groups.map((g) => g.cat.id || g.cat.name)))}>▸</button>
     </div>
 
+    <div class="cats">
     ${groups.map((g) => {
       const key = g.cat.id || g.cat.name;
       const shown = g.list.filter((x) => !query || x.name.toLowerCase().includes(query.toLowerCase()));
       if (query && shown.length === 0) return null;
       const open = query || !collapsed.has(key);
       return html`
+        <div class="catblock">
         <div class="cathead" onClick=${() => !sortMode && toggle(key)}>
           ${!sortMode && html`<span class=${"chev " + (open ? "" : "closed")}>▾</span>`}
           <span>${g.cat.icon || "•"}</span><span>${g.cat.name}</span>
@@ -1111,8 +1120,9 @@ function Review({ tripId, go }) {
                 </button>
               </div>`)}
           </div>`}
-      `;
+        </div>`;
     })}
+    </div>
 
     <h2>Etwas vermisst?</h2>
     <div class="card">
