@@ -155,6 +155,7 @@
                background: transparent; border: 1px solid var(--border); font-size: 1rem; }
     .mini-ic.on { background: var(--primary); color: var(--primary-ink); border-color: transparent; }
     button.toggle-on { border-color: var(--primary); color: var(--primary); }
+    .mini-input { min-height: 38px; padding: 8px 10px; font-size: .85rem; border-radius: 10px; }
     .center { text-align: center; }
     .spinner { margin: 40px auto; width: 28px; height: 28px; border: 3px solid var(--border);
                border-top-color: var(--primary); border-radius: 50%; animation: spin 1s linear infinite; }
@@ -165,14 +166,14 @@
     /* Desktop/Laptop: mehr Breite + mehrspaltige Kategorien (alles auf einen Blick) */
     .catblock { break-inside: avoid; -webkit-column-break-inside: avoid; }
     @media (min-width: 900px) {
-      #app { max-width: 1040px; }
-      .actionbar { max-width: 1040px; }
-      .cats { column-count: 2; column-gap: 18px; }
+      #app { max-width: 1000px; }
+      .actionbar { max-width: 1000px; }
+      .cats { column-count: 2; column-gap: 16px; }
     }
-    @media (min-width: 1320px) {
-      #app { max-width: 1280px; }
-      .actionbar { max-width: 1280px; }
-      .cats { column-count: 3; }
+    @media (min-width: 1200px) {
+      #app { max-width: 1440px; }
+      .actionbar { max-width: 1440px; }
+      .cats { column-count: 4; }
     }
   </style>
 </head>

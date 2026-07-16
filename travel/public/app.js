@@ -164,6 +164,7 @@ function generateList(items, trip, legs, signals) {
   const chosen = items
     .filter((it) => (it.tags || []).some((t) => tags.has(t)))
     .filter((it) => !(bulkyBlocked && it.bulky))
+    .filter((it) => !(days <= 2 && it.name === "Rasierer")) // Übernachtung: kein Rasierer
     .map((it) => toRow(it, days));
 
   // Zusatzregeln, die Items unabhängig von Tags erzwingen
@@ -796,10 +797,11 @@ function TripView({ tripId, go }) {
     <p class="muted">
       ${done}/${total} gepackt${weight > 0 ? ` · offen ${(weight / 1000).toFixed(1)} kg` : ""}
     </p>
-    <input style="margin-top:4px" placeholder="🔍 Item suchen…" value=${query} onInput=${(e) => setQuery(e.target.value)} />
-    <button class=${"ghost block " + (unpackedOnly ? "toggle-on" : "")} style="margin-top:8px" onClick=${() => setUnpackedOnly((v) => !v)}>
-      ${unpackedOnly ? "☑ Nur noch nicht gepackte" : "☐ Nur noch nicht gepackte"}
-    </button>
+    <div class="row" style="margin-top:6px;gap:8px">
+      <input class="mini-input" style="flex:1" placeholder="🔍 Suchen" value=${query} onInput=${(e) => setQuery(e.target.value)} />
+      <button class=${"mini-input" + (unpackedOnly ? " toggle-on" : "")} style="width:auto;flex:0 0 auto;white-space:nowrap"
+              onClick=${() => setUnpackedOnly((v) => !v)}>${unpackedOnly ? "☑ ungepackt" : "☐ ungepackt"}</button>
+    </div>
     <div class="listbar">
       <span class="lbl">${sortMode ? "Reihenfolge ändern" : "Kategorien"}</span>
       <button class=${"mini-ic" + (sortMode ? " on" : "")} title="Sortieren" onClick=${() => setSortMode((s) => !s)}>⇅</button>
