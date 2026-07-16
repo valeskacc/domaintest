@@ -154,12 +154,37 @@
     .error { color: var(--danger); font-size: .9rem; }
     .list-clean { list-style: none; padding: 0; margin: 0; }
     a { color: var(--primary); }
+    /* Übersicht: Reiter + Kacheln */
+    .segmented { display: flex; gap: 6px; background: var(--card); border: 1px solid var(--border);
+                 border-radius: 999px; padding: 4px; }
+    .segmented button { flex: 1; border: 0; background: transparent; border-radius: 999px;
+                        min-height: 38px; color: var(--muted); font-weight: 600; }
+    .segmented button.on { background: var(--primary); color: var(--primary-ink); }
+    .tiles { display: grid; grid-template-columns: 1fr; gap: 12px; }
+    @media (min-width: 640px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
+    @media (min-width: 1000px) { .tiles { grid-template-columns: repeat(3, 1fr); } }
+    .tile { position: relative; border-radius: 16px; overflow: hidden; aspect-ratio: 16 / 10;
+            cursor: pointer; border: 1px solid var(--border);
+            background: linear-gradient(135deg, #0e3b37, #061a19); }
+    .tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    .tile .overlay { position: absolute; inset: 0;
+                     background: linear-gradient(to top, rgba(0,0,0,.85), rgba(0,0,0,.10) 55%, rgba(0,0,0,.30)); }
+    .tile .meta { position: absolute; left: 0; right: 0; bottom: 0; padding: 12px 14px; }
+    .tile .t-title { font-weight: 700; font-size: 1.02rem; color: #fff; }
+    .tile .t-sub { font-size: .8rem; color: #d7f2ee; }
+    .tile .t-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; }
+    .tile-ic { width: 32px; min-height: 32px; padding: 0; border-radius: 8px; border: 0;
+               background: rgba(0,0,0,.45); color: #fff; font-size: .9rem; }
+    .tile .t-badge { position: absolute; top: 8px; left: 8px; background: var(--primary); color: var(--primary-ink);
+                     font-size: .72rem; font-weight: 700; padding: 3px 8px; border-radius: 999px; }
     /* Desktop/Laptop: mehr Breite + mehrspaltige Kategorien (alles auf einen Blick) */
     .catblock { break-inside: avoid; -webkit-column-break-inside: avoid; }
+    .wizcards > .card { break-inside: avoid; -webkit-column-break-inside: avoid; }
     @media (min-width: 900px) {
       #app { max-width: 1000px; }
       .actionbar { max-width: 1000px; }
       .cats { column-count: 2; column-gap: 16px; }
+      .wizcards { column-count: 2; column-gap: 16px; }
     }
     @media (min-width: 1200px) {
       #app { max-width: 1440px; }

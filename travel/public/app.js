@@ -458,30 +458,52 @@ function Login() {
 /* ---------- Home / Historie ---------- */
 function Home({ go }) {
   const [trips, setTrips] = useState(null);
-  const load = () =>
-    sb.from("trips").select("*").order("start_date", { ascending: false, nullsFirst: false })
-      .then(({ data }) => setTrips(data || []));
+  const [dests, setDests] = useState({});
+  const [tab, setTab] = useState("upcoming");
+  async function load() {
+    const [{ data: tr }, { data: lg }] = await Promise.all([
+      sb.from("trips").select("*").order("start_date", { ascending: false, nullsFirst: false }),
+      sb.from("trip_legs").select("trip_id,destination,position").order("position"),
+    ]);
+    setTrips(tr || []);
+    const m = {};
+    for (const l of lg || []) if (l.destination && !m[l.trip_id]) m[l.trip_id] = l.destination;
+    setDests(m);
+  }
   useEffect(() => { load(); }, []);
   const today = new Date().toISOString().slice(0, 10);
-  const upcoming = (trips || []).filter((t) => !t.end_date || t.end_date >= today);
-  const past = (trips || []).filter((t) => t.end_date && t.end_date < today);
+  const all = trips || [];
+  const upcoming = all.filter((t) => !t.end_date || t.end_date >= today)
+    .sort((a, b) => (a.start_date || "9999").localeCompare(b.start_date || "9999"));
+  const past = all.filter((t) => t.end_date && t.end_date < today)
+    .sort((a, b) => (b.start_date || "").localeCompare(a.start_date || ""));
+  const list = tab === "upcoming" ? upcoming : past;
 
   return html`
     <h1>Deine Reisen</h1>
-    <p class="muted">Neue Packliste erstellen oder frühere ansehen.</p>
+    <div class="segmented" style="margin:10px 0 16px">
+      <button class=${tab === "upcoming" ? "on" : ""} onClick=${() => setTab("upcoming")}>Zukünftig</button>
+      <button class=${tab === "past" ? "on" : ""} onClick=${() => setTab("past")}>Vergangen</button>
+    </div>
     ${trips === null && html`<div class="spinner"></div>`}
-    ${trips && trips.length === 0 && html`<div class="card center muted">Noch keine Reise. Leg unten los! 👇</div>`}
-    ${upcoming.length > 0 && html`<h2>Anstehend & offen</h2>`}
-    ${upcoming.map((t) => html`<${TripCard} t=${t} go=${go} reload=${load} />`)}
-    ${past.length > 0 && html`<h2>Archiv</h2>`}
-    ${past.map((t) => html`<${TripCard} t=${t} go=${go} reload=${load} />`)}
+    ${trips && list.length === 0 && html`<div class="card center muted">
+      ${tab === "upcoming" ? "Keine anstehenden Reisen – leg unten los! 👇" : "Noch keine vergangenen Reisen."}
+    </div>`}
+    <div class="tiles">
+      ${list.map((t) => html`<${TripTile} t=${t} dest=${dests[t.id]} go=${go} reload=${load} />`)}
+    </div>
     <div class="actionbar">
       <button class="primary block" onClick=${() => go({ name: "wizard" })}>+ Neue Reise</button>
     </div>
   `;
 }
-function TripCard({ t, go, reload }) {
+function TripTile({ t, dest, go, reload }) {
   const fmt = (d) => (d ? new Date(d).toLocaleDateString("de-DE", { day: "2-digit", month: "short" }) : "?");
+  const kw = ((dest || t.title || "travel").split(",")[0] || "travel").trim();
+  const img = "https://loremflickr.com/600/360/" + encodeURIComponent(kw || "travel");
+  const today = new Date().toISOString().slice(0, 10);
+  const needsReview = t.end_date && t.end_date < today && !t.reviewed_at;
+  const purposeLabel = t.purpose === "workation" ? "Workation" : t.purpose === "business" ? "Business" : "Privat";
   async function copy(e) { e.stopPropagation(); await duplicateTrip(t.id); reload(); }
   async function del(e) {
     e.stopPropagation();
@@ -489,16 +511,17 @@ function TripCard({ t, go, reload }) {
     await removeTrip(t.id); reload();
   }
   return html`
-    <div class="card" style="cursor:pointer" onClick=${() => go({ name: "trip", tripId: t.id })}>
-      <div style="display:flex;align-items:center;gap:10px">
-        <div style="flex:1;min-width:0">
-          <div style="font-weight:700">${t.title}</div>
-          <div class="muted" style="font-size:.85rem">
-            ${fmt(t.start_date)} – ${fmt(t.end_date)} · ${t.purpose === "business" ? "Business" : "Privat"}
-          </div>
-        </div>
-        <button class="mini-ic" title="Kopieren" onClick=${copy}>⧉</button>
-        <button class="mini-ic" title="Löschen" onClick=${del}>🗑</button>
+    <div class="tile" onClick=${() => go({ name: "trip", tripId: t.id })}>
+      <img src=${img} loading="lazy" onError=${(e) => { e.target.style.display = "none"; }} />
+      <div class="overlay"></div>
+      <div class="t-actions">
+        <button class="tile-ic" title="Kopieren" onClick=${copy}>⧉</button>
+        <button class="tile-ic" title="Löschen" onClick=${del}>🗑</button>
+      </div>
+      ${needsReview && html`<div class="t-badge">📝 Rückblick</div>`}
+      <div class="meta">
+        <div class="t-title">${t.title}</div>
+        <div class="t-sub">${fmt(t.start_date)} – ${fmt(t.end_date)} · ${purposeLabel}</div>
       </div>
     </div>
   `;
@@ -587,17 +610,26 @@ function Wizard({ go, editId }) {
     const tripData = { title: title.trim(), start_date: start, end_date: end, purpose, persons };
 
     if (editId) {
-      // Bearbeiten: Reise + Etappen aktualisieren, Liste neu berechnen.
+      // Sicherheitsabfrage: Liste behalten (Standard) oder neu berechnen?
+      const keepList = confirm(
+        "Deine bearbeitete Packliste behalten?\n\n" +
+        "OK = Liste behalten (nur Reisedaten & Name speichern)\n" +
+        "Abbrechen = Liste an die neuen Bedingungen neu berechnen"
+      );
       await sb.from("trips").update(tripData).eq("id", editId);
       await sb.from("trip_legs").delete().eq("trip_id", editId);
       await sb.from("trip_legs").insert(legRows(editId));
-      const { data: existing } = await sb.from("trip_items").select("*").eq("trip_id", editId).eq("removed", false);
-      // Gepackte & selbst hinzugefügte Items behalten, alte Vorschläge verwerfen
-      const keepNames = new Set((existing || []).filter((x) => x.packed || x.source === "manual").map((x) => x.name.toLowerCase()));
-      const throwaway = (existing || []).filter((x) => !x.packed && x.source !== "manual");
-      if (throwaway.length) await sb.from("trip_items").delete().in("id", throwaway.map((x) => x.id));
-      const fresh = generateList(items, tripData, legs, signals).filter((x) => !keepNames.has(x.name.toLowerCase()));
-      if (fresh.length) await sb.from("trip_items").insert(fresh.map((x) => ({ ...x, trip_id: editId })));
+      if (!keepList) {
+        const { data: existing } = await sb.from("trip_items").select("*").eq("trip_id", editId);
+        // Gepacktes & Eigenes behalten, Entferntes bleibt entfernt, alte Vorschläge verwerfen
+        const keepNames = new Set((existing || []).filter((x) => !x.removed && (x.packed || x.source === "manual")).map((x) => x.name.toLowerCase()));
+        const removedNames = new Set((existing || []).filter((x) => x.removed).map((x) => x.name.toLowerCase()));
+        const throwaway = (existing || []).filter((x) => !x.removed && !x.packed && x.source !== "manual");
+        if (throwaway.length) await sb.from("trip_items").delete().in("id", throwaway.map((x) => x.id));
+        const fresh = generateList(items, tripData, legs, signals)
+          .filter((x) => !keepNames.has(x.name.toLowerCase()) && !removedNames.has(x.name.toLowerCase()));
+        if (fresh.length) await sb.from("trip_items").insert(fresh.map((x) => ({ ...x, trip_id: editId })));
+      }
       setBusy(false);
       go({ name: "trip", tripId: editId });
       return;
@@ -634,6 +666,7 @@ function Wizard({ go, editId }) {
       <h1 style="flex:1;font-size:1.3rem;margin:0">${editId ? "Reise bearbeiten" : "Neue Reise"}</h1>
     </div>
 
+    <div class="wizcards">
     <div class="card">
       <label>Titel</label>
       <input placeholder="z. B. Kitesurfen Ägypten" value=${title} onInput=${(e) => setTitle(e.target.value)} />
@@ -695,6 +728,7 @@ function Wizard({ go, editId }) {
             <button class=${"chip " + (leg.activities.includes(a.tag) ? "on" : "")} onClick=${() => toggleAct(i, a.tag)}>${a.l}</button>`)}
         </div>
       </div>`)}
+    </div>
 
     <button class="ghost block" onClick=${() => setLegs([...legs, bizActive ? { ...emptyLeg(), activities: ["business"] } : emptyLeg()])}>+ Weitere Etappe (Rundreise)</button>
     ${err && html`<p class="error">${err}</p>`}
