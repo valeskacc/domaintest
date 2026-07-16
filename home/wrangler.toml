@@ -1,0 +1,10 @@
+name = "home-valeska"
+compatibility_date = "2026-07-14"
+
+[assets]
+directory = "./public"
+not_found_handling = "single-page-application"
+
+[[routes]]
+pattern = "home.valeska.cc"
+custom_domain = true
