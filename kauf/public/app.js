@@ -8,49 +8,24 @@ const html = htm.bind(h);
 const SUPABASE_URL = "https://qcsezegptoblkpvwhtzx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_PkA4IRR8xTrug-JgY-vN5g_EsH34zNB";
 
-/* Session dauerhaft speichern und über alle *.valeska.cc-Apps teilen (SSO) */
-const COOKIE_DOMAIN = location.hostname.endsWith("valeska.cc") ? "; domain=.valeska.cc" : "";
-const COOKIE_SET = "; path=/; max-age=34560000; SameSite=Lax; Secure" + COOKIE_DOMAIN;
-const COOKIE_DEL = "; path=/; max-age=0; SameSite=Lax; Secure" + COOKIE_DOMAIN;
-const CHUNK = 3200;
-function readCookies() {
-  const o = {};
-  for (const c of (document.cookie ? document.cookie.split("; ") : [])) {
-    const i = c.indexOf("=");
-    if (i > 0) o[c.slice(0, i)] = c.slice(i + 1);
-  }
-  return o;
-}
-const cookieStorage = {
-  getItem(key) {
-    const c = readCookies();
-    if (c[key] != null) return decodeURIComponent(c[key]);
-    if (c[key + ".0"] != null) {
-      let i = 0, out = "";
-      while (c[key + "." + i] != null) { out += c[key + "." + i]; i++; }
-      return decodeURIComponent(out);
-    }
-    try { return localStorage.getItem(key); } catch (e) { return null; }
-  },
-  setItem(key, value) {
-    this.removeItem(key, true);
-    const enc = encodeURIComponent(value);
-    if (enc.length <= CHUNK) document.cookie = key + "=" + enc + COOKIE_SET;
-    else for (let i = 0, n = Math.ceil(enc.length / CHUNK); i < n; i++)
-      document.cookie = key + "." + i + "=" + enc.slice(i * CHUNK, (i + 1) * CHUNK) + COOKIE_SET;
-    try { localStorage.setItem(key, value); } catch (e) {}
-  },
-  removeItem(key, keepLocal) {
-    const c = readCookies();
-    if (c[key] != null) document.cookie = key + "=" + COOKIE_DEL;
-    let i = 0;
-    while (c[key + "." + i] != null) { document.cookie = key + "." + i + "=" + COOKIE_DEL; i++; }
-    if (!keepLocal) { try { localStorage.removeItem(key); } catch (e) {} }
-  },
-};
 const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
-  auth: { storage: cookieStorage, persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
 });
+
+/* Aufräumen: früher gesetzte, zu große Login-Cookies auf .valeska.cc entfernen –
+   sie ließen Cloudflare Anfragen mit HTTP 403 ablehnen. Die Anmeldung bleibt pro
+   App über den localStorage erhalten. */
+(function clearLegacyAuthCookies() {
+  try {
+    if (!location.hostname.endsWith("valeska.cc")) return;
+    for (const c of (document.cookie ? document.cookie.split("; ") : [])) {
+      const name = c.slice(0, c.indexOf("="));
+      if (!name || !name.startsWith("sb-")) continue;
+      document.cookie = name + "=; path=/; max-age=0; SameSite=Lax; Secure; domain=.valeska.cc";
+      document.cookie = name + "=; path=/; max-age=0; SameSite=Lax; Secure";
+    }
+  } catch (e) {}
+})();
 
 /* Footer-Navigation zwischen den Apps */
 function Footer({ current }) {
