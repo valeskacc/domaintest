@@ -20,6 +20,20 @@ function fmtDate(d) {
   const dt = new Date(d + "T00:00:00");
   return dt.toLocaleDateString("de-DE", { day: "2-digit", month: "short" });
 }
+function fmtDay(d) {
+  const t = today();
+  if (d === t) return "Heute";
+  const y = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
+  if (d === y) return "Gestern";
+  return new Date(d + "T00:00:00").toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "short", year: "numeric" });
+}
+const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) : "";
+// Gruppiert erledigte Aufgaben nach Erledigungs-Datum (neueste zuerst)
+function groupDone(done) {
+  const map = {};
+  for (const d of done) { const day = (d.done_at || "").slice(0, 10) || "—"; (map[day] ||= []).push(d); }
+  return Object.keys(map).sort((a, b) => b.localeCompare(a)).map((k) => [k, map[k]]);
+}
 // Baut aus flacher Liste einen {top:[], subs:{parentId:[]}} Baum
 function buildTree(rows) {
   const top = [], subs = {};
@@ -189,24 +203,60 @@ function ListView({ list }) {
   const [rows, setRows] = useState(null);
   const [open, setOpen] = useState({});
   const [editor, setEditor] = useState(null); // null | {task} | {task:null} (neu)
+  const [showDone, setShowDone] = useState(false);
 
   async function load() {
-    const { data } = await sb.from("todos").select("*").eq("list_id", list.id).eq("done", false)
-      .order("created_at");
+    const { data } = await sb.from("todos").select("*").eq("list_id", list.id).order("created_at");
     setRows(data || []);
   }
   useEffect(() => { load(); }, [list.id]);
 
+  async function restore(id) {
+    await sb.from("todos").update({ done: false, done_at: null }).eq("id", id);
+    load();
+  }
+  async function delPerm(id) {
+    if (!confirm("Endgültig löschen?")) return;
+    await sb.from("todos").delete().eq("id", id);
+    load();
+  }
+
   if (rows === null) return html`<div class="spinner"></div>`;
-  const { top, subs } = buildTree(rows);
+  const active = rows.filter((r) => !r.done);
+  const done = rows.filter((r) => r.done).sort((a, b) => (b.done_at || "").localeCompare(a.done_at || ""));
+  const { top, subs } = buildTree(active);
 
   return html`
     ${top.length === 0
-      ? html`<div class="emptyhint">Noch keine Aufgaben in „${list.name}".<br/>Tippe unten auf <strong>+ Aufgabe</strong>.</div>`
+      ? html`<div class="emptyhint">Noch keine offenen Aufgaben in „${list.name}".<br/>Tippe unten auf <strong>+ Aufgabe</strong>.</div>`
       : top.map((t) => html`
           <${TaskRow} key=${t.id} task=${t} subs=${subs[t.id] || []}
             open=${!!open[t.id]} toggleOpen=${() => setOpen((o) => ({ ...o, [t.id]: !o[t.id] }))}
             onEdit=${() => setEditor({ task: t })} onChange=${load} editable=${true} />`)}
+
+    ${done.length > 0 && html`
+      <div style="margin-top:26px">
+        <button class="ghost block" style="text-align:left;display:flex;align-items:center;gap:8px"
+                onClick=${() => setShowDone((s) => !s)}>
+          <span class=${"caret" + (showDone ? " open" : "")}>▸</span> ✓ Erledigt (${done.length})
+        </button>
+        ${showDone && groupDone(done).map(([day, items]) => html`
+          <h2 key=${day}>${fmtDay(day)}</h2>
+          ${items.map((d) => html`
+            <div class="task done" key=${d.id}>
+              <button class="check" style="background:var(--primary);border-color:transparent" title="Wiederherstellen"
+                      onClick=${() => restore(d.id)}>✓</button>
+              <div class="body">
+                <div class="ttl">${d.title}</div>
+                <div class="meta"><span class="chip">${fmtTime(d.done_at)} Uhr</span></div>
+              </div>
+              <div class="tools">
+                <button title="Wiederherstellen" onClick=${() => restore(d.id)}>↩</button>
+                <button title="Endgültig löschen" onClick=${() => delPerm(d.id)}>🗑</button>
+              </div>
+            </div>`)}
+        `)}
+      </div>`}
 
     <button class="fab" onClick=${() => setEditor({ task: null })}>+ Aufgabe</button>
 

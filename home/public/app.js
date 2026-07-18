@@ -11,7 +11,7 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const APPS = [
   { icon: "🧳", name: "Pack-Assistent", desc: "Packlisten & Reisen", href: "https://travel.valeska.cc", ready: true },
-  { icon: "✅", name: "To-Do", desc: "Aufgaben & Reminder", ready: false },
+  { icon: "✅", name: "To-Do", desc: "Listen, Aufgaben & Prioritäten", href: "https://todo.valeska.cc", ready: true },
   { icon: "♻️", name: "Kauf → 2 raus", desc: "Neu gekauft? Zwei müssen weichen", ready: false },
   { icon: "🩺", name: "Medic", desc: "Gesundheitsdaten & Arzttermine", ready: false },
   { icon: "📅", name: "Kalender", desc: "Termine im Blick", ready: false },
