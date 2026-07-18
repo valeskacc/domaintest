@@ -1,0 +1,20 @@
+name: Deploy Todo
+
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - "todo/**"
+      - ".github/workflows/deploy-todo.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy todo app
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: todo
+          wranglerVersion: "4"
