@@ -58,6 +58,7 @@ function Footer({ current }) {
     { k: "home", i: "⌂", l: "Home", u: "https://home.valeska.cc" },
     { k: "travel", i: "🧳", l: "Reisen", u: "https://travel.valeska.cc" },
     { k: "todo", i: "✅", l: "To-Do", u: "https://todo.valeska.cc" },
+    { k: "kauf", i: "♻️", l: "Kauf", u: "https://kauf.valeska.cc" },
   ];
   return html`
     <nav class="appnav">

@@ -58,6 +58,7 @@ function Footer({ current }) {
     { k: "home", i: "⌂", l: "Home", u: "https://home.valeska.cc" },
     { k: "travel", i: "🧳", l: "Reisen", u: "https://travel.valeska.cc" },
     { k: "todo", i: "✅", l: "To-Do", u: "https://todo.valeska.cc" },
+    { k: "kauf", i: "♻️", l: "Kauf", u: "https://kauf.valeska.cc" },
   ];
   return html`
     <nav class="appnav">
@@ -71,7 +72,7 @@ function Footer({ current }) {
 const APPS = [
   { icon: "🧳", name: "Pack-Assistent", desc: "Packlisten & Reisen", href: "https://travel.valeska.cc", ready: true },
   { icon: "✅", name: "To-Do", desc: "Listen, Aufgaben & Prioritäten", href: "https://todo.valeska.cc", ready: true },
-  { icon: "♻️", name: "Kauf → 2 raus", desc: "Neu gekauft? Zwei müssen weichen", ready: false },
+  { icon: "♻️", name: "Kauf → 2 raus", desc: "Neu gekauft? Zwei müssen weichen", href: "https://kauf.valeska.cc", ready: true },
   { icon: "🩺", name: "Medic", desc: "Gesundheitsdaten & Arzttermine", ready: false },
   { icon: "📅", name: "Kalender", desc: "Termine im Blick", ready: false },
   { icon: "⌚", name: "Health / Garmin", desc: "Aktivität & Vitalwerte", ready: false },

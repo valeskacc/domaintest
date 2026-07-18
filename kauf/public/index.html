@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#000000" />
+  <title>Kauf → 2 raus</title>
+  <style>
+    :root {
+      --bg: #000000; --card: #101a19; --text: #eaf6f4; --muted: #7e9997; --border: #223330;
+      --primary: #2fd6c6; --primary-ink: #04231f; --danger: #ff6b6b;
+      --safe-b: env(safe-area-inset-bottom, 0px); --safe-t: env(safe-area-inset-top, 0px);
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg);
+           color: var(--text); line-height: 1.45; }
+    #app { max-width: 760px; margin: 0 auto; min-height: 100vh; }
+    header.appbar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 8px;
+                    padding: calc(12px + var(--safe-t)) 16px 12px;
+                    background: color-mix(in srgb, var(--card) 88%, transparent);
+                    backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
+    header.appbar .title { font-weight: 800; font-size: 1.12rem; flex: 1; color: var(--primary); letter-spacing: .3px;
+                           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    header.appbar button { width: auto; min-height: 34px; padding: 6px 12px; font-size: .8rem; font-weight: 500;
+                           color: var(--muted); background: transparent; border: 1px solid var(--border); border-radius: 10px; }
+    main { padding: 16px 16px calc(90px + var(--safe-b)); }
+    h1 { font-size: 1.4rem; margin: 4px 0 2px; }
+    h2 { font-size: 1.02rem; margin: 20px 0 8px; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+    p.muted { color: var(--muted); margin: 4px 0 16px; }
+    .muted { color: var(--muted); }
+    label { display: block; font-size: .8rem; color: var(--muted); margin: 12px 0 6px; font-weight: 600; }
+    input, textarea, button { font: inherit; color: inherit; }
+    input, textarea { width: 100%; min-height: 46px; padding: 11px 13px;
+                    border-radius: 12px; border: 1px solid var(--border); background: var(--card); }
+    textarea { min-height: 64px; resize: vertical; }
+    input:focus, textarea:focus { outline: 2px solid var(--primary); border-color: var(--primary); }
+    button { cursor: pointer; font-weight: 600; background: transparent; border: none; }
+    .primary { background: var(--primary); color: var(--primary-ink); border: 1px solid transparent; border-radius: 999px;
+               min-height: 48px; padding: 12px 18px; }
+    .ghost { background: transparent; border: 1px solid var(--border); border-radius: 12px; min-height: 44px; padding: 10px 14px; }
+    .block { width: 100%; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 16px; }
+    .error { color: var(--danger); font-size: .9rem; }
+    .center { text-align: center; }
+    a { color: var(--primary); }
+    .spinner { margin: 40px auto; width: 28px; height: 28px; border: 3px solid var(--border);
+               border-top-color: var(--primary); border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Tabs */
+    .tabs { display: flex; gap: 8px; margin: 4px 0 14px; }
+    .tabs button { flex: 1; min-height: 40px; border: 1px solid var(--border); border-radius: 999px;
+                   background: transparent; color: var(--muted); font-weight: 600; }
+    .tabs button.active { background: var(--primary); color: var(--primary-ink); border-color: transparent; }
+
+    /* Kauf-Karte */
+    .pcard { margin-bottom: 14px; }
+    .pcard .top { display: flex; align-items: flex-start; gap: 10px; }
+    .pcard .nm { flex: 1; font-weight: 700; font-size: 1.08rem; overflow-wrap: anywhere; }
+    .pcard .note { color: var(--muted); font-size: .85rem; margin-top: 2px; overflow-wrap: anywhere; }
+    .pcard .del { color: var(--muted); width: auto; min-height: auto; padding: 4px 6px; font-size: 1rem; }
+    .prog { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem; font-weight: 700;
+            border-radius: 999px; padding: 3px 10px; border: 1px solid var(--border); color: var(--muted); margin-top: 8px; }
+    .prog.full { color: var(--primary); border-color: color-mix(in srgb, var(--primary) 55%, var(--border)); }
+    .dots { display: inline-flex; gap: 4px; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--muted); }
+    .dot.on { background: var(--primary); border-color: var(--primary); }
+
+    .glist { margin: 12px 0 0; }
+    .grow { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-top: 1px dashed var(--border); }
+    .grow .gi { flex: 0 0 auto; color: var(--danger); font-size: .95rem; }
+    .grow .gn { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .grow .x { color: var(--muted); width: auto; min-height: auto; padding: 2px 6px; }
+    .addg { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+    .addg input { min-height: 42px; }
+    .addg button { flex: 0 0 auto; }
+    .hint { color: var(--muted); font-size: .82rem; margin-top: 8px; }
+    .emptyhint { color: var(--muted); text-align: center; padding: 30px 10px; }
+    .done-badge { color: var(--primary); font-weight: 700; font-size: .82rem; margin-top: 8px; }
+
+    /* FAB */
+    .fab { position: fixed; right: 18px; bottom: calc(20px + var(--safe-b)); z-index: 30;
+           width: auto; min-height: 54px; padding: 0 22px; border-radius: 999px; background: var(--primary);
+           color: var(--primary-ink); font-weight: 800; font-size: 1rem; border: none;
+           box-shadow: 0 8px 24px rgba(0,0,0,.5); display: flex; align-items: center; gap: 8px; }
+
+    /* Modal */
+    .overlay { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.6); backdrop-filter: blur(3px);
+               display: flex; align-items: flex-end; justify-content: center; padding: 0; }
+    @media (min-width: 560px) { .overlay { align-items: center; padding: 20px; } }
+    .modal { width: 100%; max-width: 480px; background: var(--card); border: 1px solid var(--border);
+             border-radius: 20px 20px 0 0; padding: 18px 18px calc(20px + var(--safe-b)); }
+    @media (min-width: 560px) { .modal { border-radius: 20px; } }
+    .modal h3 { margin: 0 0 6px; font-size: 1.15rem; }
+    .editbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+    .editbar strong { font-size: 1.02rem; }
+    .editbar .primary { min-height: 40px; padding: 8px 18px; }
+    .editbar .ghost { min-height: 40px; padding: 8px 12px; }
+    .row2 { display: flex; gap: 10px; margin-top: 16px; }
+    .row2 .primary, .row2 .ghost, .row2 .danger-solid { flex: 1; }
+    .danger-solid { background: var(--danger); color: #2a0808; border: 1px solid transparent; border-radius: 999px;
+                    min-height: 48px; padding: 12px 18px; font-weight: 700; }
+
+    /* Footer-Navigation */
+    .appnav { display: flex; gap: 8px; margin: 30px 0 0; }
+    .appnav a { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+      text-decoration: none; color: var(--muted); font-weight: 600; font-size: .74rem;
+      padding: 10px 4px; border: 1px solid var(--border); border-radius: 14px; background: var(--card); }
+    .appnav a.active { color: var(--primary); border-color: var(--primary); }
+    .appnav a .i { font-size: 1.3rem; }
+  </style>
+</head>
+<body>
+  <div id="app"><div class="spinner"></div></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

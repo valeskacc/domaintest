@@ -1,0 +1,20 @@
+name: Deploy Kauf
+
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - "kauf/**"
+      - ".github/workflows/deploy-kauf.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy kauf app
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: kauf
+          wranglerVersion: "4"
