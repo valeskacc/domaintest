@@ -7,7 +7,66 @@ const html = htm.bind(h);
 
 const SUPABASE_URL = "https://qcsezegptoblkpvwhtzx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_PkA4IRR8xTrug-JgY-vN5g_EsH34zNB";
-const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+/* Session dauerhaft speichern und über alle *.valeska.cc-Apps teilen (SSO) */
+const COOKIE_DOMAIN = location.hostname.endsWith("valeska.cc") ? "; domain=.valeska.cc" : "";
+const COOKIE_SET = "; path=/; max-age=34560000; SameSite=Lax; Secure" + COOKIE_DOMAIN;
+const COOKIE_DEL = "; path=/; max-age=0; SameSite=Lax; Secure" + COOKIE_DOMAIN;
+const CHUNK = 3200;
+function readCookies() {
+  const o = {};
+  for (const c of (document.cookie ? document.cookie.split("; ") : [])) {
+    const i = c.indexOf("=");
+    if (i > 0) o[c.slice(0, i)] = c.slice(i + 1);
+  }
+  return o;
+}
+const cookieStorage = {
+  getItem(key) {
+    const c = readCookies();
+    if (c[key] != null) return decodeURIComponent(c[key]);
+    if (c[key + ".0"] != null) {
+      let i = 0, out = "";
+      while (c[key + "." + i] != null) { out += c[key + "." + i]; i++; }
+      return decodeURIComponent(out);
+    }
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+  },
+  setItem(key, value) {
+    this.removeItem(key, true);
+    const enc = encodeURIComponent(value);
+    if (enc.length <= CHUNK) document.cookie = key + "=" + enc + COOKIE_SET;
+    else for (let i = 0, n = Math.ceil(enc.length / CHUNK); i < n; i++)
+      document.cookie = key + "." + i + "=" + enc.slice(i * CHUNK, (i + 1) * CHUNK) + COOKIE_SET;
+    try { localStorage.setItem(key, value); } catch (e) {}
+  },
+  removeItem(key, keepLocal) {
+    const c = readCookies();
+    if (c[key] != null) document.cookie = key + "=" + COOKIE_DEL;
+    let i = 0;
+    while (c[key + "." + i] != null) { document.cookie = key + "." + i + "=" + COOKIE_DEL; i++; }
+    if (!keepLocal) { try { localStorage.removeItem(key); } catch (e) {} }
+  },
+};
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { storage: cookieStorage, persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+});
+
+/* Footer-Navigation zwischen den Apps */
+function Footer({ current }) {
+  const apps = [
+    { k: "home", i: "⌂", l: "Home", u: "https://home.valeska.cc" },
+    { k: "travel", i: "🧳", l: "Reisen", u: "https://travel.valeska.cc" },
+    { k: "todo", i: "✅", l: "To-Do", u: "https://todo.valeska.cc" },
+  ];
+  return html`
+    <nav class="appnav">
+      ${apps.map((a) => html`
+        <a class=${a.k === current ? "active" : ""} href=${a.u}>
+          <span class="i">${a.i}</span><span>${a.l}</span>
+        </a>`)}
+    </nav>`;
+}
 
 /* ---------- Stammdaten für die Eingabe ---------- */
 const TRANSPORT = [
@@ -419,6 +478,7 @@ function App() {
       ${view.name === "admin" && html`<${Admin} go=${go} />`}
       ${view.name === "catalog" && html`<${Catalog} go=${go} />`}
       ${view.name === "security" && html`<${Security} back=${() => go({ name: "home" })} onChange=${refreshAal} />`}
+      <${Footer} current="travel" />
     </main>
   `;
 }
@@ -475,12 +535,23 @@ function Security({ back, onChange }) {
     setErr("");
     const { data: f } = await sb.auth.mfa.listFactors();
     const totp = f?.totp || [];
+    for (const x of totp) if (x.status !== "verified") await sb.auth.mfa.unenroll({ factorId: x.id });
     const verified = totp.find((x) => x.status === "verified");
     if (verified) { setFactorId(verified.id); setStatus("active"); return; }
-    for (const x of totp) if (x.status !== "verified") await sb.auth.mfa.unenroll({ factorId: x.id });
+    await enroll();
+  }
+  async function enroll() {
+    setErr(""); setCode("");
     const { data, error } = await sb.auth.mfa.enroll({ factorType: "totp" });
-    if (error) { setErr(error.message); return; }
+    if (error) { setErr(error.message); setStatus("active"); return; }
     setFactorId(data.id); setQr(data.totp.qr_code); setSecret(data.totp.secret); setStatus("enroll");
+  }
+  async function reconfigure() {
+    if (!confirm("2FA neu einrichten? Du scannst gleich einen neuen QR-Code – der bisherige wird ersetzt.")) return;
+    const { data: f } = await sb.auth.mfa.listFactors();
+    for (const x of (f?.totp || [])) await sb.auth.mfa.unenroll({ factorId: x.id });
+    await onChange();
+    await enroll();
   }
   async function verify() {
     setBusy(true); setErr("");
@@ -488,11 +559,12 @@ function Security({ back, onChange }) {
     if (e1) { setErr(e1.message); setBusy(false); return; }
     const { error: e2 } = await sb.auth.mfa.verify({ factorId, challengeId: ch.id, code: code.trim() });
     if (e2) { setErr(e2.message); setBusy(false); return; }
-    setBusy(false); await onChange(); back();
+    setBusy(false); await onChange(); setStatus("active");
   }
   async function remove() {
     if (!confirm("2FA wirklich entfernen?")) return;
-    await sb.auth.mfa.unenroll({ factorId });
+    const { data: f } = await sb.auth.mfa.listFactors();
+    for (const x of (f?.totp || [])) await sb.auth.mfa.unenroll({ factorId: x.id });
     await onChange(); back();
   }
 
@@ -505,7 +577,9 @@ function Security({ back, onChange }) {
     ${status === "active" && html`
       <div class="card" style="max-width:420px">
         <p style="margin-top:0">✅ 2FA ist <strong>aktiv</strong>. Beim Login wird zusätzlich ein Code aus deiner Authenticator-App verlangt.</p>
-        <button class="ghost block" style="color:var(--danger)" onClick=${remove}>2FA entfernen</button>
+        <button class="ghost block" onClick=${reconfigure}>🔄 Neu einrichten / QR-Code anzeigen</button>
+        <p class="muted" style="font-size:.8rem;margin:8px 0 0">Zum Hinzufügen auf einem weiteren Gerät neu einrichten und den QR-Code auf allen gewünschten Geräten scannen.</p>
+        <button class="ghost block" style="color:var(--danger);margin-top:14px" onClick=${remove}>2FA entfernen</button>
       </div>`}
     ${status === "enroll" && html`
       <div class="card" style="max-width:420px">
@@ -559,10 +633,10 @@ function Login() {
       <div class="card">
         <form onSubmit=${submit}>
           <label>E-Mail</label>
-          <input type="email" autocomplete="username" required
+          <input type="email" name="email" autocomplete="username" required
                  value=${email} onInput=${(e) => setEmail(e.target.value)} />
           <label>Passwort</label>
-          <input type="password" autocomplete=${mode === "login" ? "current-password" : "new-password"}
+          <input type="password" name="password" autocomplete=${mode === "login" ? "current-password" : "new-password"}
                  required minlength="6" value=${pw} onInput=${(e) => setPw(e.target.value)} />
           ${msg && html`<p class="error" style="margin-top:12px">${msg}</p>`}
           <button class="primary block" style="margin-top:16px" disabled=${busy}>

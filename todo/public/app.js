@@ -7,7 +7,66 @@ const html = htm.bind(h);
 
 const SUPABASE_URL = "https://qcsezegptoblkpvwhtzx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_PkA4IRR8xTrug-JgY-vN5g_EsH34zNB";
-const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+/* Session dauerhaft speichern und über alle *.valeska.cc-Apps teilen (SSO) */
+const COOKIE_DOMAIN = location.hostname.endsWith("valeska.cc") ? "; domain=.valeska.cc" : "";
+const COOKIE_SET = "; path=/; max-age=34560000; SameSite=Lax; Secure" + COOKIE_DOMAIN;
+const COOKIE_DEL = "; path=/; max-age=0; SameSite=Lax; Secure" + COOKIE_DOMAIN;
+const CHUNK = 3200;
+function readCookies() {
+  const o = {};
+  for (const c of (document.cookie ? document.cookie.split("; ") : [])) {
+    const i = c.indexOf("=");
+    if (i > 0) o[c.slice(0, i)] = c.slice(i + 1);
+  }
+  return o;
+}
+const cookieStorage = {
+  getItem(key) {
+    const c = readCookies();
+    if (c[key] != null) return decodeURIComponent(c[key]);
+    if (c[key + ".0"] != null) {
+      let i = 0, out = "";
+      while (c[key + "." + i] != null) { out += c[key + "." + i]; i++; }
+      return decodeURIComponent(out);
+    }
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+  },
+  setItem(key, value) {
+    this.removeItem(key, true);
+    const enc = encodeURIComponent(value);
+    if (enc.length <= CHUNK) document.cookie = key + "=" + enc + COOKIE_SET;
+    else for (let i = 0, n = Math.ceil(enc.length / CHUNK); i < n; i++)
+      document.cookie = key + "." + i + "=" + enc.slice(i * CHUNK, (i + 1) * CHUNK) + COOKIE_SET;
+    try { localStorage.setItem(key, value); } catch (e) {}
+  },
+  removeItem(key, keepLocal) {
+    const c = readCookies();
+    if (c[key] != null) document.cookie = key + "=" + COOKIE_DEL;
+    let i = 0;
+    while (c[key + "." + i] != null) { document.cookie = key + "." + i + "=" + COOKIE_DEL; i++; }
+    if (!keepLocal) { try { localStorage.removeItem(key); } catch (e) {} }
+  },
+};
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { storage: cookieStorage, persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+});
+
+/* Footer-Navigation zwischen den Apps */
+function Footer({ current }) {
+  const apps = [
+    { k: "home", i: "⌂", l: "Home", u: "https://home.valeska.cc" },
+    { k: "travel", i: "🧳", l: "Reisen", u: "https://travel.valeska.cc" },
+    { k: "todo", i: "✅", l: "To-Do", u: "https://todo.valeska.cc" },
+  ];
+  return html`
+    <nav class="appnav">
+      ${apps.map((a) => html`
+        <a class=${a.k === current ? "active" : ""} href=${a.u}>
+          <span class="i">${a.i}</span><span>${a.l}</span>
+        </a>`)}
+    </nav>`;
+}
 
 /* ---------- Helfer ---------- */
 const today = () => new Date().toISOString().slice(0, 10);
@@ -84,6 +143,7 @@ function App() {
       ${view.name === "home"
         ? html`<${Home} tab=${tab} setTab=${setTab} go=${go} />`
         : html`<${ListView} list=${view.list} />`}
+      <${Footer} current="todo" />
     </main>
   `;
 }
@@ -408,9 +468,9 @@ function Login() {
       <div class="card" style="max-width:380px;margin:0 auto">
         <form onSubmit=${submit}>
           <label>E-Mail</label>
-          <input type="email" autocomplete="username" required value=${email} onInput=${(e) => setEmail(e.target.value)} />
+          <input type="email" name="email" autocomplete="username" required value=${email} onInput=${(e) => setEmail(e.target.value)} />
           <label>Passwort</label>
-          <input type="password" autocomplete="current-password" required value=${pw} onInput=${(e) => setPw(e.target.value)} />
+          <input type="password" name="password" autocomplete="current-password" required value=${pw} onInput=${(e) => setPw(e.target.value)} />
           ${msg && html`<p class="error" style="margin-top:12px">${msg}</p>`}
           <button class="primary block" style="margin-top:16px" disabled=${busy}>${busy ? "…" : "Anmelden"}</button>
         </form>
