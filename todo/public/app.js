@@ -1,5 +1,5 @@
 import { h, render } from "https://esm.sh/preact@10";
-import { useState, useEffect } from "https://esm.sh/preact@10/hooks";
+import { useState, useEffect, useRef } from "https://esm.sh/preact@10/hooks";
 import htm from "https://esm.sh/htm@3";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -69,24 +69,25 @@ function Footer({ current }) {
 }
 
 /* ---------- Helfer ---------- */
-const today = () => new Date().toISOString().slice(0, 10);
-function fmtDate(d) {
-  if (!d) return "";
+const pad = (n) => String(n).padStart(2, "0");
+const localYmd = (d) => d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+const localHm = (d) => pad(d.getHours()) + ":" + pad(d.getMinutes());
+const today = () => localYmd(new Date());
+function dayLabel(ymd) {
+  if (!ymd) return "";
   const t = today();
-  if (d === t) return "Heute";
-  const tm = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
-  if (d === tm) return "Morgen";
-  const dt = new Date(d + "T00:00:00");
-  return dt.toLocaleDateString("de-DE", { day: "2-digit", month: "short" });
+  if (ymd === t) return "Heute";
+  if (ymd === localYmd(new Date(Date.now() + 864e5))) return "Morgen";
+  if (ymd === localYmd(new Date(Date.now() - 864e5))) return "Gestern";
+  return new Date(ymd + "T00:00:00").toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "short" });
 }
-function fmtDay(d) {
-  const t = today();
-  if (d === t) return "Heute";
-  const y = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
-  if (d === y) return "Gestern";
-  return new Date(d + "T00:00:00").toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "short", year: "numeric" });
-}
+const fmtDay = dayLabel;
 const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) : "";
+function fmtDateTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return dayLabel(localYmd(d)) + ", " + fmtTime(iso) + " Uhr";
+}
 // Gruppiert erledigte Aufgaben nach Erledigungs-Datum (neueste zuerst)
 function groupDone(done) {
   const map = {};
@@ -101,6 +102,68 @@ function buildTree(rows) {
     else top.push(r);
   }
   return { top, subs };
+}
+
+/* ---------- Drag & Drop (Zeiger-basiert, funktioniert auch mobil) ---------- */
+function Sortable({ ids, render, onCommit, movedRef }) {
+  const [order, setOrder] = useState(ids);
+  const orderRef = useRef(ids);
+  const dragId = useRef(null);
+  const moved = useRef(false);
+  const contRef = useRef(null);
+  useEffect(() => { setOrder(ids); orderRef.current = ids; }, [ids.join("|")]);
+  orderRef.current = order;
+
+  function start(e, id) {
+    dragId.current = id; moved.current = false;
+    try { e.target.setPointerCapture(e.pointerId); } catch (_) {}
+  }
+  function move(e) {
+    if (dragId.current == null) return;
+    const cont = contRef.current; if (!cont) return;
+    const rows = Array.from(cont.querySelectorAll("[data-sid]"));
+    const y = e.clientY;
+    let beforeId = null;
+    for (const r of rows) {
+      const b = r.getBoundingClientRect();
+      if (y < b.top + b.height / 2) { beforeId = r.getAttribute("data-sid"); break; }
+    }
+    setOrder((cur) => {
+      const id = dragId.current;
+      const at = cur.indexOf(id);
+      const without = cur.filter((x) => x !== id);
+      let idx = beforeId == null ? without.length : without.indexOf(beforeId);
+      if (idx < 0) idx = without.length;
+      without.splice(idx, 0, id);
+      if (without.indexOf(id) !== at) moved.current = true;
+      return without;
+    });
+  }
+  function end() {
+    if (dragId.current == null) return;
+    dragId.current = null;
+    if (moved.current) { if (movedRef) movedRef.current = Date.now(); onCommit(orderRef.current); }
+    moved.current = false;
+  }
+  return html`
+    <div ref=${contRef} onPointerMove=${move} onPointerUp=${end} onPointerCancel=${end}>
+      ${order.map((id) => render(id, (e) => start(e, id), dragId.current === id))}
+    </div>`;
+}
+
+/* ---------- Bestätigungs-Dialog im App-Stil ---------- */
+function ConfirmModal({ text, sub, yes = "OK", danger, onYes, onClose }) {
+  return html`
+    <div class="overlay" onClick=${onClose}>
+      <div class="modal confirm" onClick=${(e) => e.stopPropagation()}>
+        <h3>${text}</h3>
+        ${sub && html`<p class="muted" style="margin:6px 0 0">${sub}</p>`}
+        <div class="row2">
+          <button class="ghost" onClick=${onClose}>Abbrechen</button>
+          <button class=${danger ? "danger-solid" : "primary"} onClick=${onYes}>${yes}</button>
+        </div>
+      </div>
+    </div>`;
 }
 
 /* ---------- App ---------- */
@@ -159,15 +222,17 @@ function Home({ tab, setTab, go }) {
   `;
 }
 
-/* ---------- Tab: Listenübersicht ---------- */
+/* ---------- Tab: Listenübersicht (Drag & Drop) ---------- */
 function ListsTab({ go }) {
   const [lists, setLists] = useState(null);
   const [counts, setCounts] = useState({});
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
+  const [confirm, setConfirm] = useState(null);
+  const movedRef = useRef(0);
 
   async function load() {
-    const { data } = await sb.from("todo_lists").select("*").order("created_at");
+    const { data } = await sb.from("todo_lists").select("*").order("sort").order("created_at");
     setLists(data || []);
     const { data: t } = await sb.from("todos").select("list_id").eq("done", false).is("parent_id", null);
     const c = {};
@@ -180,16 +245,25 @@ function ListsTab({ go }) {
     const nm = name.trim();
     if (!nm) return;
     setName(""); setAdding(false);
-    await sb.from("todo_lists").insert({ name: nm });
+    await sb.from("todo_lists").insert({ name: nm, sort: Date.now() });
     load();
   }
-  async function del(id, nm) {
-    if (!confirm(`Liste „${nm}" mit allen Aufgaben löschen?`)) return;
-    await sb.from("todo_lists").delete().eq("id", id);
+  function askDel(l) {
+    setConfirm({
+      text: `Liste „${l.name}" löschen?`,
+      sub: "Alle Aufgaben dieser Liste werden mitgelöscht.",
+      yes: "Löschen", danger: true,
+      onYes: async () => { await sb.from("todo_lists").delete().eq("id", l.id); setConfirm(null); load(); },
+    });
+  }
+  async function commit(ids) {
+    await Promise.all(ids.map((id, i) => sb.from("todo_lists").update({ sort: i }).eq("id", id)));
     load();
   }
 
   if (lists === null) return html`<div class="spinner"></div>`;
+  const byId = {}; lists.forEach((l) => (byId[l.id] = l));
+
   return html`
     ${adding
       ? html`
@@ -207,16 +281,21 @@ function ListsTab({ go }) {
 
     ${lists.length === 0 && !adding
       ? html`<div class="emptyhint">Noch keine Listen. Leg deine erste Liste an. 📝</div>`
-      : html`
-        <div class="lists">
-          ${lists.map((l) => html`
-            <button class="card listcard" key=${l.id} onClick=${() => go({ name: "list", list: l })}>
-              <div class="nm">${l.name}</div>
-              <div class="cnt">${counts[l.id] || 0}</div>
-              <button class="del" title="Löschen"
-                      onClick=${(e) => { e.stopPropagation(); del(l.id, l.name); }}>🗑</button>
-            </button>`)}
-        </div>`}
+      : html`<${Sortable} ids=${lists.map((l) => l.id)} movedRef=${movedRef} onCommit=${commit}
+          render=${(id, onDown, dragging) => {
+            const l = byId[id]; if (!l) return null;
+            return html`
+              <div class=${"card listcard" + (dragging ? " dragging" : "")} data-sid=${id} key=${id}
+                   onClick=${() => { if (Date.now() - movedRef.current < 250) return; go({ name: "list", list: l }); }}>
+                <span class="drag" title="Ziehen zum Sortieren" onPointerDown=${onDown}>⋮⋮</span>
+                <div class="nm">${l.name}</div>
+                <div class="cnt">${counts[id] || 0}</div>
+                <button class="del" title="Löschen" onClick=${(e) => { e.stopPropagation(); askDel(l); }}>🗑</button>
+              </div>`;
+          }} />`}
+
+    ${confirm && html`<${ConfirmModal} text=${confirm.text} sub=${confirm.sub} yes=${confirm.yes}
+        danger=${confirm.danger} onYes=${confirm.onYes} onClose=${() => setConfirm(null)} />`}
   `;
 }
 
@@ -236,9 +315,10 @@ function AllTab({ go }) {
 
   if (data === null) return html`<div class="spinner"></div>`;
   const { top, subs } = data.tree;
-  const withDue = top.filter((t) => t.due_date).sort((a, b) => a.due_date.localeCompare(b.due_date));
-  const withPrio = top.filter((t) => !t.due_date && t.priority).sort((a, b) => a.priority - b.priority);
-  const rest = top.filter((t) => !t.due_date && !t.priority);
+  const withDue = top.filter((t) => t.due_at).sort((a, b) => a.due_at.localeCompare(b.due_at));
+  const withPrio = top.filter((t) => !t.due_at && t.priority).sort((a, b) => a.priority - b.priority);
+  const rest = top.filter((t) => !t.due_at && !t.priority);
+  const openTask = (t) => go({ name: "list", list: { id: t.list_id, name: data.listMap[t.list_id] || "Liste" } });
 
   if (top.length === 0)
     return html`<div class="emptyhint">Keine offenen Aufgaben. Alles erledigt! 🎉</div>`;
@@ -248,7 +328,7 @@ function AllTab({ go }) {
     ${items.map((t) => html`
       <${TaskRow} key=${t.id} task=${t} subs=${subs[t.id] || []}
         open=${!!open[t.id]} toggleOpen=${() => setOpen((o) => ({ ...o, [t.id]: !o[t.id] }))}
-        listName=${data.listMap[t.list_id]} onChange=${load} editable=${false} />`)}
+        listName=${data.listMap[t.list_id]} onChange=${load} onOpen=${openTask} showSub=${true} />`)}
   `;
 
   return html`
@@ -262,8 +342,11 @@ function AllTab({ go }) {
 function ListView({ list }) {
   const [rows, setRows] = useState(null);
   const [open, setOpen] = useState({});
-  const [editor, setEditor] = useState(null); // null | {task} | {task:null} (neu)
+  const [editor, setEditor] = useState(null);   // null | {task} | {task:null}
+  const [detailId, setDetailId] = useState(null);
   const [showDone, setShowDone] = useState(false);
+  const [confirm, setConfirm] = useState(null);
+  const movedRef = useRef(0);
 
   async function load() {
     const { data } = await sb.from("todos").select("*").eq("list_id", list.id).order("created_at");
@@ -275,24 +358,66 @@ function ListView({ list }) {
     await sb.from("todos").update({ done: false, done_at: null }).eq("id", id);
     load();
   }
-  async function delPerm(id) {
-    if (!confirm("Endgültig löschen?")) return;
-    await sb.from("todos").delete().eq("id", id);
+  function askDelPerm(d) {
+    setConfirm({ text: `„${d.title}" endgültig löschen?`, yes: "Löschen", danger: true,
+      onYes: async () => { await sb.from("todos").delete().eq("id", d.id); setConfirm(null); load(); } });
+  }
+  function askDelTask(t, after) {
+    setConfirm({ text: `Aufgabe „${t.title}" löschen?`, yes: "Löschen", danger: true,
+      onYes: async () => { await sb.from("todos").delete().or(`id.eq.${t.id},parent_id.eq.${t.id}`); setConfirm(null); if (after) after(); load(); } });
+  }
+  async function commit(ids) {
+    await Promise.all(ids.map((id, i) => sb.from("todos").update({ sort: i }).eq("id", id)));
     load();
   }
+  const openDetail = (t) => { if (Date.now() - movedRef.current < 250) return; setDetailId(t.id); };
 
   if (rows === null) return html`<div class="spinner"></div>`;
   const active = rows.filter((r) => !r.done);
   const done = rows.filter((r) => r.done).sort((a, b) => (b.done_at || "").localeCompare(a.done_at || ""));
   const { top, subs } = buildTree(active);
+  const detailTask = detailId ? rows.find((r) => r.id === detailId && !r.done) : null;
+
+  // Reihenfolge: Datum zuerst, dann Priorität, dann frei sortierbar (Drag & Drop)
+  const dated = top.filter((t) => t.due_at).sort((a, b) => a.due_at.localeCompare(b.due_at));
+  const prioed = top.filter((t) => !t.due_at && t.priority).sort((a, b) => a.priority - b.priority);
+  const manual = top.filter((t) => !t.due_at && !t.priority)
+    .sort((a, b) => (a.sort - b.sort) || (a.created_at || "").localeCompare(b.created_at || ""));
+  const manualById = {}; manual.forEach((t) => (manualById[t.id] = t));
+
+  const staticRow = (t) => html`
+    <${TaskRow} key=${t.id} task=${t} subs=${subs[t.id] || []}
+      open=${!!open[t.id]} toggleOpen=${() => setOpen((o) => ({ ...o, [t.id]: !o[t.id] }))}
+      onChange=${load} onOpen=${openDetail} onDelete=${() => askDelTask(t)} showSub=${true} />`;
+
+  const overlays = html`
+    ${editor && html`<${TaskEditor} listId=${list.id} task=${editor.task}
+        onClose=${() => setEditor(null)} onSaved=${() => { setEditor(null); load(); }} />`}
+    ${confirm && html`<${ConfirmModal} text=${confirm.text} sub=${confirm.sub} yes=${confirm.yes}
+        danger=${confirm.danger} onYes=${confirm.onYes} onClose=${() => setConfirm(null)} />`}`;
+
+  if (detailTask) return html`
+    <${TaskDetail} task=${detailTask} subs=${subs[detailTask.id] || []}
+      onBack=${() => setDetailId(null)} onChange=${load}
+      onEdit=${() => setEditor({ task: detailTask })}
+      onDelete=${() => askDelTask(detailTask, () => setDetailId(null))} />
+    ${overlays}`;
 
   return html`
     ${top.length === 0
       ? html`<div class="emptyhint">Noch keine offenen Aufgaben in „${list.name}".<br/>Tippe unten auf <strong>+ Aufgabe</strong>.</div>`
-      : top.map((t) => html`
-          <${TaskRow} key=${t.id} task=${t} subs=${subs[t.id] || []}
-            open=${!!open[t.id]} toggleOpen=${() => setOpen((o) => ({ ...o, [t.id]: !o[t.id] }))}
-            onEdit=${() => setEditor({ task: t })} onChange=${load} editable=${true} />`)}
+      : html`
+          ${dated.map(staticRow)}
+          ${prioed.map(staticRow)}
+          <${Sortable} ids=${manual.map((t) => t.id)} movedRef=${movedRef} onCommit=${commit}
+            render=${(id, onDown, dragging) => {
+              const t = manualById[id]; if (!t) return null;
+              return html`
+                <${TaskRow} key=${id} task=${t} subs=${subs[id] || []}
+                  open=${!!open[id]} toggleOpen=${() => setOpen((o) => ({ ...o, [id]: !o[id] }))}
+                  onChange=${load} onOpen=${openDetail} onDelete=${() => askDelTask(t)}
+                  dragHandle=${onDown} dragging=${dragging} showSub=${true} />`;
+            }} />`}
 
     ${done.length > 0 && html`
       <div style="margin-top:26px">
@@ -312,35 +437,22 @@ function ListView({ list }) {
               </div>
               <div class="tools">
                 <button title="Wiederherstellen" onClick=${() => restore(d.id)}>↩</button>
-                <button title="Endgültig löschen" onClick=${() => delPerm(d.id)}>🗑</button>
+                <button title="Endgültig löschen" onClick=${() => askDelPerm(d)}>🗑</button>
               </div>
             </div>`)}
         `)}
       </div>`}
 
     <button class="fab" onClick=${() => setEditor({ task: null })}>+ Aufgabe</button>
-
-    ${editor && html`<${TaskEditor} listId=${list.id} task=${editor.task}
-        onClose=${() => setEditor(null)} onSaved=${() => { setEditor(null); load(); }} />`}
+    ${overlays}
   `;
 }
 
-/* ---------- Eine Aufgabe mit Subtask-Dropdown ---------- */
-function TaskRow({ task, subs, open, toggleOpen, onEdit, onChange, listName, editable }) {
+/* ---------- Unteraufgaben-Liste (in Zeile & Detailseite) ---------- */
+function SubList({ task, subs, onChange, editable }) {
   const [newSub, setNewSub] = useState("");
-
-  async function complete() {
-    await sb.from("todos").update({ done: true, done_at: new Date().toISOString() }).eq("id", task.id);
-    onChange();
-  }
-  async function del() {
-    if (!confirm("Aufgabe löschen?")) return;
-    await sb.from("todos").delete().eq("id", task.id);
-    onChange();
-  }
   async function addSub() {
-    const t = newSub.trim();
-    if (!t) return;
+    const t = newSub.trim(); if (!t) return;
     setNewSub("");
     await sb.from("todos").insert({ list_id: task.list_id, parent_id: task.id, title: t });
     onChange();
@@ -349,69 +461,105 @@ function TaskRow({ task, subs, open, toggleOpen, onEdit, onChange, listName, edi
     await sb.from("todos").update({ done: true, done_at: new Date().toISOString() }).eq("id", id);
     onChange();
   }
-  async function delSub(id) {
-    await sb.from("todos").delete().eq("id", id);
-    onChange();
-  }
-
-  const over = task.due_date && task.due_date < today();
-  const hasSubToggle = subs.length > 0 || open;
+  async function delSub(id) { await sb.from("todos").delete().eq("id", id); onChange(); }
 
   return html`
-    <div>
-      <div class="task">
-        <button class=${"check" + (task.priority === 1 ? " p1" : "")} title="Erledigt" onClick=${complete}></button>
-        <div class="body">
-          <div class="ttl">${task.title}</div>
+    <div class="subwrap">
+      ${subs.map((s) => html`
+        <div class="sub" key=${s.id}>
+          <button class="check" title="Erledigt" onClick=${() => completeSub(s.id)}></button>
+          <div class="ttl">${s.title}</div>
+          ${editable && html`<button class="del" onClick=${() => delSub(s.id)}>🗑</button>`}
+        </div>`)}
+      ${editable && html`
+        <div class="addsub">
+          <input placeholder="Unteraufgabe hinzufügen …" value=${newSub}
+                 onInput=${(e) => setNewSub(e.target.value)}
+                 onKeyDown=${(e) => e.key === "Enter" && addSub()} />
+          <button class="ghost" style="width:auto;min-height:40px" onClick=${addSub}>+</button>
+        </div>`}
+    </div>`;
+}
+
+/* ---------- Eine Aufgabe (ohne Datum in der Liste) ---------- */
+function TaskRow({ task, subs, open, toggleOpen, onChange, onOpen, onDelete, listName, dragHandle, dragging, showSub }) {
+  async function complete() {
+    await sb.from("todos").update({ done: true, done_at: new Date().toISOString() })
+      .or(`id.eq.${task.id},parent_id.eq.${task.id}`);
+    onChange();
+  }
+  const hasToggle = subs.length > 0 || open;
+  return html`
+    <div class=${"task" + (dragging ? " dragging" : "")} data-sid=${task.id}>
+      <button class=${"check" + (task.priority === 1 ? " p1" : "")} title="Erledigt" onClick=${complete}></button>
+      <div class="body" style=${onOpen ? "cursor:pointer" : ""} onClick=${() => onOpen && onOpen(task)}>
+        <div class="ttl">${task.title}</div>
+        ${(listName || task.priority || subs.length > 0) && html`
           <div class="meta">
             ${listName && html`<span class="chip">🗂 ${listName}</span>`}
-            ${task.due_date && html`<span class=${"chip due" + (over ? " over" : "")}>📅 ${fmtDate(task.due_date)}</span>`}
             ${task.priority && html`<span class="chip prio">⭐ P${task.priority}</span>`}
-            ${subs.length > 0 && html`<span class="chip" style="cursor:pointer" onClick=${toggleOpen}>
+            ${subs.length > 0 && html`<span class="chip" style="cursor:pointer"
+              onClick=${(e) => { e.stopPropagation(); toggleOpen(); }}>
               <span class=${"caret" + (open ? " open" : "")}>▸</span> ${subs.length} Unteraufg.</span>`}
-          </div>
-        </div>
-        <div class="tools">
-          ${editable && html`<button title="Unteraufgabe / öffnen" onClick=${toggleOpen}>${open ? "▾" : "▸"}</button>`}
-          ${editable && onEdit && html`<button title="Bearbeiten" onClick=${onEdit}>✎</button>`}
-          ${editable && html`<button title="Löschen" onClick=${del}>🗑</button>`}
-        </div>
+          </div>`}
       </div>
-
-      ${open && html`
-        <div class="subwrap">
-          ${subs.map((s) => html`
-            <div class=${"sub"} key=${s.id}>
-              <button class="check" title="Erledigt" onClick=${() => completeSub(s.id)}></button>
-              <div class="ttl">${s.title}</div>
-              ${editable && html`<button class="del" onClick=${() => delSub(s.id)}>🗑</button>`}
-            </div>`)}
-          ${editable && html`
-            <div class="addsub">
-              <input placeholder="Unteraufgabe hinzufügen …" value=${newSub}
-                     onInput=${(e) => setNewSub(e.target.value)}
-                     onKeyDown=${(e) => e.key === "Enter" && addSub()} />
-              <button class="ghost" style="width:auto;min-height:40px" onClick=${addSub}>+</button>
-            </div>`}
-        </div>`}
+      <div class="tools">
+        ${hasToggle && html`<button title="Unteraufgaben" onClick=${toggleOpen}>${open ? "▾" : "▸"}</button>`}
+        ${onDelete && html`<button title="Löschen" onClick=${onDelete}>🗑</button>`}
+        ${dragHandle && html`<span class="drag" title="Ziehen zum Sortieren" onPointerDown=${dragHandle}>⋮⋮</span>`}
+      </div>
     </div>
+    ${open && showSub && html`<${SubList} task=${task} subs=${subs} onChange=${onChange} editable=${true} />`}
+  `;
+}
+
+/* ---------- Detailseite einer Aufgabe ---------- */
+function TaskDetail({ task, subs, onBack, onChange, onEdit, onDelete }) {
+  const over = task.due_at && task.due_at < new Date().toISOString();
+  return html`
+    <div class="detailbar">
+      <button class="ghost" style="width:auto" onClick=${onBack}>‹ Zurück</button>
+      <button class="ghost" style="width:auto" onClick=${onEdit}>✎ Bearbeiten</button>
+    </div>
+    <h1 style="margin:12px 0 6px">${task.title}</h1>
+    <div class="meta" style="margin-bottom:8px">
+      ${task.due_at
+        ? html`<span class=${"chip due" + (over ? " over" : "")}>📅 ${fmtDateTime(task.due_at)}</span>`
+        : html`<span class="chip">Kein Zieldatum</span>`}
+      ${task.priority
+        ? html`<span class="chip prio">⭐ Priorität ${task.priority}</span>`
+        : html`<span class="chip">Keine Priorität</span>`}
+    </div>
+    <h2>Unteraufgaben</h2>
+    <${SubList} task=${task} subs=${subs} onChange=${onChange} editable=${true} />
+    <button class="ghost block" style="color:var(--danger);margin-top:24px" onClick=${onDelete}>🗑 Aufgabe löschen</button>
   `;
 }
 
 /* ---------- Aufgabe anlegen / bearbeiten (Modal) ---------- */
 function TaskEditor({ listId, task, onClose, onSaved }) {
+  const init = task?.due_at ? new Date(task.due_at) : null;
   const [title, setTitle] = useState(task?.title || "");
-  const [due, setDue] = useState(task?.due_date || "");
+  const [date, setDate] = useState(init ? localYmd(init) : "");
+  const [time, setTime] = useState(init ? localHm(init) : "");
   const [prio, setPrio] = useState(task?.priority || null);
   const [busy, setBusy] = useState(false);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    const el = inputRef.current;
+    if (el) { el.focus(); try { el.setSelectionRange(el.value.length, el.value.length); } catch (_) {} }
+  }, []);
 
   async function save() {
     const t = title.trim();
     if (!t) return;
     setBusy(true);
-    const payload = { title: t, due_date: due || null, priority: prio || null };
+    let due_at = null;
+    if (date) { const d = new Date(`${date}T${time || "09:00"}`); due_at = isNaN(d.getTime()) ? null : d.toISOString(); }
+    const payload = { title: t, due_at, priority: prio || null };
     if (task) await sb.from("todos").update(payload).eq("id", task.id);
-    else await sb.from("todos").insert({ ...payload, list_id: listId });
+    else await sb.from("todos").insert({ ...payload, list_id: listId, sort: Date.now() });
     setBusy(false);
     onSaved();
   }
@@ -419,15 +567,21 @@ function TaskEditor({ listId, task, onClose, onSaved }) {
   return html`
     <div class="overlay" onClick=${onClose}>
       <div class="modal" onClick=${(e) => e.stopPropagation()}>
-        <h3>${task ? "Aufgabe bearbeiten" : "Neue Aufgabe"}</h3>
+        <div class="editbar">
+          <button class="ghost" style="width:auto" onClick=${onClose}>Abbrechen</button>
+          <strong>${task ? "Aufgabe bearbeiten" : "Neue Aufgabe"}</strong>
+          <button class="primary" style="width:auto" disabled=${busy || !title.trim()} onClick=${save}>${busy ? "…" : "Speichern"}</button>
+        </div>
         <label>Aufgabe</label>
-        <textarea autofocus placeholder="Was ist zu tun?" value=${title}
-                  onInput=${(e) => setTitle(e.target.value)}></textarea>
+        <textarea ref=${inputRef} placeholder="Was ist zu tun?" value=${title}
+                  onInput=${(e) => setTitle(e.target.value)}
+                  onKeyDown=${(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) save(); }}></textarea>
 
-        <label>Zieldatum (optional)</label>
-        <div style="display:flex;gap:8px;align-items:center">
-          <input type="date" value=${due} onInput=${(e) => setDue(e.target.value)} />
-          ${due && html`<button class="ghost" style="width:auto" onClick=${() => setDue("")}>✕</button>`}
+        <label>Zieldatum & Uhrzeit (optional)</label>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input type="date" style="flex:1;min-width:140px" value=${date} onInput=${(e) => setDate(e.target.value)} />
+          <input type="time" style="flex:1;min-width:110px" value=${time} disabled=${!date} onInput=${(e) => setTime(e.target.value)} />
+          ${(date || time) && html`<button class="ghost" style="width:auto" onClick=${() => { setDate(""); setTime(""); }}>✕</button>`}
         </div>
 
         <label>Priorität (optional)</label>
@@ -435,11 +589,6 @@ function TaskEditor({ listId, task, onClose, onSaved }) {
           ${[1, 2, 3, 4, 5, 6].map((p) => html`
             <button class=${prio === p ? "sel" : ""} onClick=${() => setPrio(prio === p ? null : p)}>${p}</button>`)}
           <button class=${"none" + (prio ? "" : " sel")} onClick=${() => setPrio(null)}>keine Priorität</button>
-        </div>
-
-        <div class="row2">
-          <button class="ghost" onClick=${onClose}>Abbrechen</button>
-          <button class="primary" disabled=${busy || !title.trim()} onClick=${save}>${busy ? "…" : "Speichern"}</button>
         </div>
       </div>
     </div>

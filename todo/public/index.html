@@ -65,7 +65,10 @@
     /* Listen-Kacheln */
     .lists { display: grid; grid-template-columns: 1fr; gap: 12px; }
     @media (min-width: 620px) { .lists { grid-template-columns: repeat(2, 1fr); } }
-    .listcard { display: flex; align-items: center; gap: 12px; text-align: left; }
+    .listcard { display: flex; align-items: center; gap: 10px; text-align: left; margin-bottom: 10px; }
+    .drag { cursor: grab; color: var(--muted); font-size: 1.1rem; line-height: 1; padding: 6px 4px;
+            user-select: none; touch-action: none; flex: 0 0 auto; letter-spacing: -2px; }
+    .dragging { opacity: .55; }
     .listcard .nm { flex: 1; font-weight: 700; font-size: 1.05rem; overflow: hidden; text-overflow: ellipsis; }
     .listcard .cnt { color: var(--muted); font-size: .85rem; }
     .listcard .del { color: var(--muted); font-size: 1rem; width: auto; min-height: auto; padding: 4px 6px; }
@@ -118,8 +121,23 @@
     .prios button.sel { background: var(--primary); color: var(--primary-ink); border-color: transparent; }
     .prios button.none { flex: 1 1 100%; color: var(--muted); font-weight: 600; }
     .row2 { display: flex; gap: 10px; margin-top: 16px; }
-    .row2 .primary, .row2 .ghost { flex: 1; }
+    .row2 .primary, .row2 .ghost, .row2 .danger-solid { flex: 1; }
     .emptyhint { color: var(--muted); text-align: center; padding: 30px 10px; }
+
+    /* Editor-Kopfzeile mit Speichern oben */
+    .editbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+    .editbar strong { font-size: 1.02rem; }
+    .editbar .primary { border-radius: 999px; min-height: 40px; padding: 8px 18px; }
+    .editbar .ghost { min-height: 40px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 12px; color: var(--muted); }
+
+    /* Detailseite */
+    .detailbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .detailbar .ghost { min-height: 40px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 12px; color: var(--muted); }
+
+    /* Roter Bestätigungs-Button */
+    .danger-solid { background: var(--danger); color: #2a0808; border: 1px solid transparent; border-radius: 999px;
+                    min-height: 48px; padding: 12px 18px; font-weight: 700; }
+    .modal.confirm h3 { font-size: 1.08rem; }
   </style>
 </head>
 <body>
