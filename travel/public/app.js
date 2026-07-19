@@ -108,6 +108,25 @@ async function signOutEverywhere() {
   await sb.auth.signOut();
 }
 
+// Bei komplettem Verbindungsverlust (z. B. Flugmodus) NIE versuchen, die Sitzung
+// übers Netz zu bestätigen/erneuern - das kann trotz Zeitlimit mehrfach intern
+// wiederholt werden und dadurch weiterhin sehr lange dauern. Stattdessen sofort
+// und synchron die zuletzt bekannte Sitzung direkt aus dem Speicher lesen.
+function readLocalSession() {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || !/^sb-.*-auth-token$/.test(key)) continue;
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      const session = parsed && (parsed.currentSession || parsed);
+      if (session && session.access_token && session.user) return session;
+    }
+  } catch (e) {}
+  return null;
+}
+
 /* „Diesem Gerät vertrauen" – 60 Tage kein 2FA-Code nötig */
 const TRUST_KEY = "sb-mfa-trust";
 function deviceTrusted() { try { return Number(localStorage.getItem(TRUST_KEY) || 0) > Date.now(); } catch (e) { return false; } }
@@ -526,6 +545,12 @@ function App() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      if (!navigator.onLine) {
+        const local = readLocalSession();
+        if (local) { CURRENT_SESSION = local; if (!cancelled) setSession(local); return; }
+        // Kein erkennbares lokales Sitzungsformat gefunden - sicherheitshalber den
+        // normalen (ggf. langsameren) Weg versuchen statt fälschlich abzumelden.
+      }
       const { data } = await sb.auth.getSession();
       if (data.session) { CURRENT_SESSION = data.session; if (!cancelled) setSession(data.session); return; }
       const s = await brokerRedeem();
@@ -1096,6 +1121,8 @@ function TripView({ tripId, go }) {
   const [items, setItems] = useState(null);
   const [legs, setLegs] = useState([]);
   const [loadError, setLoadError] = useState(null);
+  const [offline, setOffline] = useState(false);
+  const [offlineAt, setOfflineAt] = useState(null);
   const [collapsed, setCollapsed] = useState(() => new Set());
   const [addCat, setAddCat] = useState(null);   // Kategorie-Key, in dem gerade hinzugefügt wird
   const [addText, setAddText] = useState("");
@@ -1109,21 +1136,24 @@ function TripView({ tripId, go }) {
 
   async function reload() {
     setLoadError(null);
-    try {
-      await withTimeout((async () => {
-        if (!categories.length) await loadMeta();
-        const uid = currentUserId();
-        const [{ data: t }, { data: it }, { data: lg }, { data: prof }] = await Promise.all([
+    const r = await loadWithCache("trip:" + tripId, async () => {
+      if (!categories.length) await loadMeta();
+      const uid = currentUserId();
+      const [{ data: t, error: te }, { data: it, error: ie }, { data: lg, error: le }, { data: prof }] =
+        await withTimeout(Promise.all([
           sb.from("trips").select("*").eq("id", tripId).single(),
           sb.from("trip_items").select("*").eq("trip_id", tripId).eq("removed", false).order("created_at"),
           sb.from("trip_legs").select("*").eq("trip_id", tripId).order("position"),
           sb.from("profiles").select("category_order").eq("id", uid).single(),
-        ]);
-        setTrip(t); setItems(it || []); setLegs(lg || []);
-        setCatOrder(Array.isArray(prof?.category_order) ? prof.category_order : []);
-      })(), 12000, "Laden der Reise dauert zu lange");
-    } catch (e) {
-      setLoadError(e?.message || String(e));
+        ]), 12000, "Laden der Reise dauert zu lange");
+      if (te || ie || le) throw (te || ie || le);
+      return { trip: t, items: it || [], legs: lg || [], catOrder: Array.isArray(prof?.category_order) ? prof.category_order : [] };
+    });
+    if (r.data) {
+      setTrip(r.data.trip); setItems(r.data.items); setLegs(r.data.legs); setCatOrder(r.data.catOrder);
+      setOffline(r.offline); setOfflineAt(r.at);
+    } else {
+      setLoadError("Diese Reise wurde offline noch nicht gespeichert. Bitte einmal mit Internet öffnen – danach ist sie auch offline verfügbar.");
     }
   }
 
@@ -1197,6 +1227,7 @@ function TripView({ tripId, go }) {
   const info = destInfoFor(legs);
 
   return html`
+    <${OfflineBanner} offline=${offline} at=${offlineAt} />
     <div style="display:flex;align-items:center;gap:10px">
       <button class="ghost" style="width:auto" onClick=${() => go({ name: "home" })}>‹</button>
       <h1 style="flex:1;font-size:1.25rem">${trip.title}</h1>

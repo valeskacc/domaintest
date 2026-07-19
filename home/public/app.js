@@ -108,6 +108,25 @@ async function signOutEverywhere() {
   await sb.auth.signOut();
 }
 
+// Bei komplettem Verbindungsverlust (z. B. Flugmodus) NIE versuchen, die Sitzung
+// übers Netz zu bestätigen/erneuern - das kann trotz Zeitlimit mehrfach intern
+// wiederholt werden und dadurch weiterhin sehr lange dauern. Stattdessen sofort
+// und synchron die zuletzt bekannte Sitzung direkt aus dem Speicher lesen.
+function readLocalSession() {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || !/^sb-.*-auth-token$/.test(key)) continue;
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      const session = parsed && (parsed.currentSession || parsed);
+      if (session && session.access_token && session.user) return session;
+    }
+  } catch (e) {}
+  return null;
+}
+
 /* „Diesem Gerät vertrauen" – 60 Tage kein 2FA-Code nötig */
 const TRUST_KEY = "sb-mfa-trust";
 function deviceTrusted() { try { return Number(localStorage.getItem(TRUST_KEY) || 0) > Date.now(); } catch (e) { return false; } }
@@ -151,6 +170,12 @@ function App() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      if (!navigator.onLine) {
+        const local = readLocalSession();
+        if (local) { if (!cancelled) setSession(local); return; }
+        // Kein erkennbares lokales Sitzungsformat gefunden - sicherheitshalber den
+        // normalen (ggf. langsameren) Weg versuchen statt fälschlich abzumelden.
+      }
       const { data } = await sb.auth.getSession();
       if (data.session) { if (!cancelled) setSession(data.session); return; }
       const s = await brokerRedeem();
