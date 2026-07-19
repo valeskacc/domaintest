@@ -190,6 +190,15 @@ const TAGS = [
 ];
 
 /* ---------- Helfer ---------- */
+// Liest die User-ID aus der lokal bereits vorhandenen Sitzung, statt sie per
+// sb.auth.getUser() jedes Mal über einen Netzwerk-Roundtrip neu zu bestätigen.
+// getUser() blieb bei schwacher Verbindung teils dauerhaft hängen und ließ
+// Ansichten wie eine Reise dann endlos laden.
+async function currentUserId() {
+  const { data } = await sb.auth.getSession();
+  return data.session ? data.session.user.id : null;
+}
+
 function daysBetween(a, b) {
   if (!a || !b) return 1;
   const d = Math.round((new Date(b) - new Date(a)) / 86400000) + 1;
@@ -236,10 +245,10 @@ function contextTags(trip, legs) {
 
 async function recordSignal(kind, name, tags, category_id) {
   try {
-    const { data: u } = await sb.auth.getUser();
-    if (!u?.user) return;
+    const uid = await currentUserId();
+    if (!uid) return;
     await sb.from("pack_signals").insert({
-      user_id: u.user.id, item_name: name, kind, tags: tags || [], category_id: category_id || null,
+      user_id: uid, item_name: name, kind, tags: tags || [], category_id: category_id || null,
     });
   } catch (_e) { /* Lernen darf den Flow nie blockieren */ }
 }
@@ -355,11 +364,11 @@ async function loadMeta() {
 }
 
 async function duplicateTrip(id) {
-  const { data: u } = await sb.auth.getUser();
+  const uid = await currentUserId();
   const { data: src } = await sb.from("trips").select("*").eq("id", id).single();
   if (!src) return null;
   const { data: nt } = await sb.from("trips").insert({
-    user_id: u.user.id, title: src.title + " (Kopie)", start_date: src.start_date,
+    user_id: uid, title: src.title + " (Kopie)", start_date: src.start_date,
     end_date: src.end_date, purpose: src.purpose, persons: src.persons, notes: src.notes,
   }).select().single();
   const { data: legs } = await sb.from("trip_legs").select("*").eq("trip_id", id);
@@ -938,9 +947,9 @@ function Wizard({ go, editId }) {
       return;
     }
 
-    const { data: user } = await sb.auth.getUser();
+    const uid = await currentUserId();
     const { data: trip, error } = await sb.from("trips")
-      .insert({ user_id: user.user.id, ...tripData }).select().single();
+      .insert({ user_id: uid, ...tripData }).select().single();
     if (error) { setBusy(false); return setErr(error.message); }
     await sb.from("trip_legs").insert(legRows(trip.id));
     let list = generateList(items, trip, legs, signals);
@@ -1077,12 +1086,12 @@ function TripView({ tripId, go }) {
 
   async function reload() {
     if (!categories.length) await loadMeta();
-    const { data: u } = await sb.auth.getUser();
+    const uid = await currentUserId();
     const [{ data: t }, { data: it }, { data: lg }, { data: prof }] = await Promise.all([
       sb.from("trips").select("*").eq("id", tripId).single(),
       sb.from("trip_items").select("*").eq("trip_id", tripId).eq("removed", false).order("created_at"),
       sb.from("trip_legs").select("*").eq("trip_id", tripId).order("position"),
-      sb.from("profiles").select("category_order").eq("id", u.user.id).single(),
+      sb.from("profiles").select("category_order").eq("id", uid).single(),
     ]);
     setTrip(t); setItems(it || []); setLegs(lg || []);
     setCatOrder(Array.isArray(prof?.category_order) ? prof.category_order : []);
@@ -1095,8 +1104,8 @@ function TripView({ tripId, go }) {
     if (j < 0 || j >= ids.length) return;
     [ids[i], ids[j]] = [ids[j], ids[i]];
     setCatOrder(ids);
-    const { data: u } = await sb.auth.getUser();
-    await sb.from("profiles").update({ category_order: ids }).eq("id", u.user.id);
+    const uid = await currentUserId();
+    await sb.from("profiles").update({ category_order: ids }).eq("id", uid);
   }
   useEffect(() => { reload(); }, [tripId]);
 
@@ -1406,12 +1415,12 @@ function Review({ tripId, go }) {
     (async () => {
       if (!categories.length) await loadMeta();
       setMCat(categories[0]?.id || "");
-      const { data: u } = await sb.auth.getUser();
+      const uid = await currentUserId();
       const [{ data: t }, { data: lg }, { data: it }, { data: prof }] = await Promise.all([
         sb.from("trips").select("*").eq("id", tripId).single(),
         sb.from("trip_legs").select("*").eq("trip_id", tripId),
         sb.from("trip_items").select("*").eq("trip_id", tripId).eq("removed", false).order("created_at"),
-        sb.from("profiles").select("category_order").eq("id", u.user.id).single(),
+        sb.from("profiles").select("category_order").eq("id", uid).single(),
       ]);
       setTrip(t); setLegs(lg || []); setItems(it || []);
       setCatOrder(Array.isArray(prof?.category_order) ? prof.category_order : []);
@@ -1427,8 +1436,8 @@ function Review({ tripId, go }) {
     if (j < 0 || j >= ids.length) return;
     [ids[i], ids[j]] = [ids[j], ids[i]];
     setCatOrder(ids);
-    const { data: u } = await sb.auth.getUser();
-    await sb.from("profiles").update({ category_order: ids }).eq("id", u.user.id);
+    const uid = await currentUserId();
+    await sb.from("profiles").update({ category_order: ids }).eq("id", uid);
   }
   function addMissed() {
     if (!mName.trim()) return;
@@ -1438,14 +1447,14 @@ function Review({ tripId, go }) {
   async function save() {
     setBusy(true);
     const ctx = contextTags(trip, legs);
-    const { data: u } = await sb.auth.getUser();
+    const uid = await currentUserId();
     // Alles, was NICHT als unnötig markiert wurde, gilt als gebraucht
     const rows = items.map((it) => ({
-      user_id: u.user.id, item_name: it.name, kind: unused[it.id] ? "unused" : "used",
+      user_id: uid, item_name: it.name, kind: unused[it.id] ? "unused" : "used",
       tags: ctx, category_id: it.category_id,
     }));
     for (const m of missed)
-      rows.push({ user_id: u.user.id, item_name: m.name, kind: "missed", tags: ctx, category_id: m.category_id });
+      rows.push({ user_id: uid, item_name: m.name, kind: "missed", tags: ctx, category_id: m.category_id });
     if (rows.length) await sb.from("pack_signals").insert(rows);
     await sb.from("trips").update({ reviewed_at: new Date().toISOString() }).eq("id", tripId);
     setBusy(false);

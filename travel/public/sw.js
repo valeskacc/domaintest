@@ -7,8 +7,9 @@
    Wichtig: eine fetch-Behandlung darf NIE ablehnen (reject) – Safari zeigt dann
    "Safari kann die Seite nicht öffnen" statt einer sinnvollen Rückfalllösung. */
 const SHELL_CACHE = "shell-v2";
-const CDN_CACHE = "cdn-v2";
+const CDN_CACHE = "cdn-v3";
 const PRECACHE_URLS = ["/", "/index.html", "/app.js"];
+const CDN_HOST = "esm.sh"; // nur das eigentliche Modul-CDN cachen, keine anderen APIs (z. B. Wetterdaten)
 
 self.addEventListener("install", (e) => {
   e.waitUntil(
@@ -36,9 +37,11 @@ self.addEventListener("fetch", (e) => {
 
   if (url.origin === location.origin) {
     e.respondWith(networkFirst(req, SHELL_CACHE));
-  } else {
+  } else if (url.hostname === CDN_HOST) {
     e.respondWith(staleWhileRevalidate(req, CDN_CACHE));
   }
+  // Alles andere (z. B. Wetter-/Geocoding-Aufrufe) unangetastet lassen – normaler,
+  // unveränderter Netzwerkzugriff, nie gecacht.
 });
 
 const OFFLINE_FALLBACK = new Response(
