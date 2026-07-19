@@ -127,6 +127,26 @@
     .row2 .primary, .row2 .ghost, .row2 .danger-solid { flex: 1; }
     .emptyhint { color: var(--muted); text-align: center; padding: 30px 10px; }
 
+    /* Segmentiertes Umschalten (Listentyp, Katalog-Ansicht) */
+    .seg { display: flex; gap: 6px; }
+    .seg button { flex: 1; min-height: 42px; border: 1px solid var(--border); border-radius: 10px;
+                  background: transparent; color: var(--muted); font-weight: 600; font-size: .85rem; }
+    .seg button.on { background: var(--primary); color: var(--primary-ink); border-color: transparent; }
+
+    /* Vorschlagsliste beim Eintippen eines Einkaufsartikels */
+    .suggest { margin-top: 8px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+    .sugrow { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+              padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--card); font-weight: 500; }
+    .sugrow:last-child { border-bottom: none; }
+
+    /* Katalog-Auswahl / Liste-verschieben-Auswahl */
+    .picklist { max-height: 55vh; overflow-y: auto; margin-top: 4px; }
+    .pickrow { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+               padding: 12px 4px; border-bottom: 1px solid var(--border); background: transparent; font-weight: 500; }
+    .pickrow.sub { padding-left: 30px; font-size: .92rem; color: var(--muted); }
+    .catrow { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+              padding: 12px 4px; border-bottom: 1px solid var(--border); background: transparent; font-weight: 700; }
+
     /* Editor-Kopfzeile mit Speichern oben */
     .editbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
     .editbar strong { font-size: 1.02rem; }

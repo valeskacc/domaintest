@@ -87,6 +87,34 @@ function buildTree(rows) {
   return { top, subs };
 }
 
+/* ---------- Einkaufs-Kategorien + Auto-Einsortierung ---------- */
+const CATEGORIES = ["Obst", "Gemüse", "Milchprodukte", "Fleisch & Fisch", "Brot & Backwaren",
+  "Tiefkühl", "Vorräte", "Getränke", "Süßes & Snacks", "Drogerie", "Haushalt", "Sonstiges"];
+const CAT_ICON = {
+  "Obst": "🍎", "Gemüse": "🥕", "Milchprodukte": "🧀", "Fleisch & Fisch": "🍖", "Brot & Backwaren": "🍞",
+  "Tiefkühl": "🧊", "Vorräte": "🥫", "Getränke": "🥤", "Süßes & Snacks": "🍫", "Drogerie": "🧴",
+  "Haushalt": "🧻", "Sonstiges": "📦",
+};
+const CAT_RULES = [
+  ["Obst", ["apfel", "äpfel", "banane", "birne", "traube", "beere", "erdbeer", "heidelbeer", "himbeer", "brombeer", "orange", "mandarine", "clementine", "zitrone", "limette", "kiwi", "mango", "ananas", "pfirsich", "nektarine", "melone", "pflaume", "kirsche", "avocado", "feige", "granatapfel", "datteln"]],
+  ["Gemüse", ["tomate", "gurke", "salat", "paprika", "zwiebel", "knoblauch", "kartoffel", "möhre", "karotte", "brokkoli", "blumenkohl", "spinat", "zucchini", "aubergine", "pilz", "champignon", "lauch", "sellerie", "rettich", "radieschen", "kürbis", "mais", "bohne", "erbse", "ingwer", "rucola", "kohl", "spargel", "fenchel", "kräuter", "petersilie", "basilikum"]],
+  ["Milchprodukte", ["milch", "joghurt", "jogurt", "quark", "käse", "butter", "sahne", "frischkäse", "mozzarella", "feta", "skyr", "buttermilch", "schmand", "creme fraiche", "pudding", "ei", "eier"]],
+  ["Fleisch & Fisch", ["fleisch", "hähnchen", "hühnchen", "hack", "wurst", "schinken", "salami", "lachs", "fisch", "thunfisch", "garnele", "rind", "schwein", "pute", "speck", "aufschnitt", "frikadelle", "steak"]],
+  ["Brot & Backwaren", ["brot", "brötchen", "toast", "baguette", "croissant", "kuchen", "semmel", "brezel", "knäcke"]],
+  ["Tiefkühl", ["tiefkühl", "tk ", "eis", "pizza", "pommes"]],
+  ["Vorräte", ["nudel", "pasta", "spaghetti", "reis", "mehl", "zucker", "salz", "pfeffer", "öl", "essig", "konserve", "dose", "tomatenmark", "passata", "müsli", "haferflocken", "cornflakes", "honig", "marmelade", "nutella", "gewürz", "brühe", "linse", "couscous", "senf", "ketchup", "mayo"]],
+  ["Getränke", ["wasser", "saft", "cola", "limo", "bier", "wein", "kaffee", "tee", "sprudel", "schorle", "getränk"]],
+  ["Süßes & Snacks", ["schokolade", "schoko", "keks", "chips", "gummibär", "bonbon", "riegel", "nüsse", "snack", "süßigkeit", "waffel", "müsliriegel"]],
+  ["Drogerie", ["shampoo", "duschgel", "seife", "zahnpasta", "zahnbürste", "deo", "creme", "windel", "tampon", "binde", "rasier", "watte", "toilettenpapier", "klopapier", "taschentuch", "sonnencreme", "pflaster"]],
+  ["Haushalt", ["spülmittel", "waschmittel", "weichspüler", "müllbeutel", "müllsack", "putz", "reiniger", "schwamm", "alufolie", "frischhalte", "backpapier", "batterie", "kerze", "serviette", "spültab"]],
+];
+function guessCategory(name) {
+  const n = (name || "").toLowerCase();
+  for (const [cat, words] of CAT_RULES) if (words.some((w) => n.includes(w))) return cat;
+  return "Sonstiges";
+}
+const catOrder = (c) => { const i = CATEGORIES.indexOf(c); return i < 0 ? CATEGORIES.length : i; };
+
 /* ---------- Drag & Drop (Zeiger-basiert, funktioniert auch mobil) ---------- */
 function Sortable({ ids, render, onCommit, movedRef }) {
   const [order, setOrder] = useState(ids);
@@ -151,6 +179,41 @@ function Sortable({ ids, render, onCommit, movedRef }) {
     </div>`;
 }
 
+/* ---------- Aufgabe/Artikel in eine andere Liste verschieben ---------- */
+function MoveListModal({ task, currentListId, onClose, onMoved }) {
+  const [lists, setLists] = useState(null);
+  useEffect(() => {
+    sb.from("todo_lists").select("id,name,kind").neq("id", currentListId).order("name")
+      .then(({ data }) => setLists(data || []));
+  }, []);
+  async function move(listId) {
+    await sb.from("todos").update({ list_id: listId }).or(`id.eq.${task.id},parent_id.eq.${task.id}`);
+    onMoved();
+  }
+  return html`
+    <div class="overlay" onClick=${onClose}>
+      <div class="modal" onClick=${(e) => e.stopPropagation()}>
+        <div class="editbar">
+          <button class="ghost" style="width:auto" onClick=${onClose}>Abbrechen</button>
+          <strong style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">„${task.title}" verschieben</strong>
+          <span style="width:1px"></span>
+        </div>
+        ${lists === null
+          ? html`<div class="spinner"></div>`
+          : lists.length === 0
+            ? html`<div class="emptyhint">Keine andere Liste vorhanden.</div>`
+            : html`<div class="picklist">
+                ${lists.map((l) => html`
+                  <button class="pickrow" key=${l.id} onClick=${() => move(l.id)}>
+                    <span>${l.kind === "shopping" ? "🛒" : "📝"}</span>
+                    <span style="flex:1;text-align:left">${l.name}</span>
+                  </button>`)}
+              </div>`}
+      </div>
+    </div>
+  `;
+}
+
 /* ---------- Bestätigungs-Dialog im App-Stil ---------- */
 function ConfirmModal({ text, sub, yes = "OK", danger, onYes, onClose }) {
   return html`
@@ -205,7 +268,9 @@ function App() {
     <main>
       ${view.name === "home"
         ? html`<${Home} tab=${tab} setTab=${setTab} go=${go} />`
-        : html`<${ListView} list=${view.list} />`}
+        : view.list.kind === "shopping"
+          ? html`<${ShoppingView} list=${view.list} />`
+          : html`<${ListView} list=${view.list} />`}
       <${Footer} current="todo" />
     </main>
   `;
@@ -228,6 +293,7 @@ function ListsTab({ go }) {
   const [counts, setCounts] = useState({});
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
+  const [kind, setKind] = useState("todo");
   const [confirm, setConfirm] = useState(null);
   const movedRef = useRef(0);
 
@@ -245,7 +311,8 @@ function ListsTab({ go }) {
     const nm = name.trim();
     if (!nm) return;
     setName(""); setAdding(false);
-    await sb.from("todo_lists").insert({ name: nm, sort: Date.now() });
+    await sb.from("todo_lists").insert({ name: nm, kind, sort: Date.now() });
+    setKind("todo");
     load();
   }
   function askDel(l) {
@@ -272,8 +339,13 @@ function ListsTab({ go }) {
           <input autofocus placeholder="z. B. Einkauf, Arbeit, Umzug …" value=${name}
                  onInput=${(e) => setName(e.target.value)}
                  onKeyDown=${(e) => e.key === "Enter" && create()} />
+          <label>Typ</label>
+          <div class="seg">
+            <button class=${kind === "todo" ? "on" : ""} onClick=${() => setKind("todo")}>📝 To-Do</button>
+            <button class=${kind === "shopping" ? "on" : ""} onClick=${() => setKind("shopping")}>🛒 Einkauf</button>
+          </div>
           <div class="row2">
-            <button class="ghost" onClick=${() => { setAdding(false); setName(""); }}>Abbrechen</button>
+            <button class="ghost" onClick=${() => { setAdding(false); setName(""); setKind("todo"); }}>Abbrechen</button>
             <button class="primary" onClick=${create}>Anlegen</button>
           </div>
         </div>`
@@ -288,7 +360,7 @@ function ListsTab({ go }) {
               <div class=${"card listcard" + (dragging ? " dragging" : "")} data-sid=${id} key=${id}
                    onClick=${() => { if (Date.now() - movedRef.current < 250) return; go({ name: "list", list: l }); }}>
                 <span class="drag" title="Ziehen zum Sortieren" onPointerDown=${onDown}>⋮⋮</span>
-                <div class="nm">${l.name}</div>
+                <div class="nm">${l.kind === "shopping" ? "🛒 " : ""}${l.name}</div>
                 <div class="cnt">${counts[id] || 0}</div>
                 <button class="del" title="Löschen" onClick=${(e) => { e.stopPropagation(); askDel(l); }}>🗑</button>
               </div>`;
@@ -305,11 +377,13 @@ function AllTab({ go }) {
   const [open, setOpen] = useState({});
 
   async function load() {
-    const { data: lists } = await sb.from("todo_lists").select("id,name");
-    const listMap = {};
-    (lists || []).forEach((l) => (listMap[l.id] = l.name));
+    const { data: lists } = await sb.from("todo_lists").select("id,name,kind");
+    const listMap = {}, shop = {};
+    (lists || []).forEach((l) => { listMap[l.id] = l; if (l.kind === "shopping") shop[l.id] = true; });
     const { data: rows } = await sb.from("todos").select("*").eq("done", false);
-    setData({ tree: buildTree(rows || []), listMap });
+    // Einkaufslisten-Artikel gehören nicht in die Aufgaben-Übersicht
+    const filtered = (rows || []).filter((r) => !shop[r.list_id]);
+    setData({ tree: buildTree(filtered), listMap });
   }
   useEffect(() => { load(); }, []);
 
@@ -318,7 +392,7 @@ function AllTab({ go }) {
   const withDue = top.filter((t) => t.due_at).sort((a, b) => a.due_at.localeCompare(b.due_at));
   const withPrio = top.filter((t) => !t.due_at && t.priority).sort((a, b) => a.priority - b.priority);
   const rest = top.filter((t) => !t.due_at && !t.priority);
-  const openTask = (t) => go({ name: "list", list: { id: t.list_id, name: data.listMap[t.list_id] || "Liste" } });
+  const openTask = (t) => go({ name: "list", list: data.listMap[t.list_id] || { id: t.list_id, name: "Liste" } });
 
   if (top.length === 0)
     return html`<div class="emptyhint">Keine offenen Aufgaben. Alles erledigt! 🎉</div>`;
@@ -346,6 +420,7 @@ function ListView({ list }) {
   const [detailId, setDetailId] = useState(null);
   const [showDone, setShowDone] = useState(false);
   const [confirm, setConfirm] = useState(null);
+  const [moveTask, setMoveTask] = useState(null);
   const movedRef = useRef(0);
 
   async function load() {
@@ -390,12 +465,15 @@ function ListView({ list }) {
     ${editor && html`<${TaskEditor} listId=${list.id} task=${editor.task}
         onClose=${() => setEditor(null)} onSaved=${() => { setEditor(null); load(); }} />`}
     ${confirm && html`<${ConfirmModal} text=${confirm.text} sub=${confirm.sub} yes=${confirm.yes}
-        danger=${confirm.danger} onYes=${confirm.onYes} onClose=${() => setConfirm(null)} />`}`;
+        danger=${confirm.danger} onYes=${confirm.onYes} onClose=${() => setConfirm(null)} />`}
+    ${moveTask && html`<${MoveListModal} task=${moveTask} currentListId=${list.id}
+        onClose=${() => setMoveTask(null)} onMoved=${() => { setMoveTask(null); setDetailId(null); load(); }} />`}`;
 
   if (detailTask) return html`
     <${TaskDetail} task=${detailTask} subs=${subs[detailTask.id] || []}
       onBack=${() => setDetailId(null)} onChange=${load}
       onEdit=${() => setEditor({ task: detailTask })}
+      onMove=${() => setMoveTask(detailTask)}
       onDelete=${() => askDelTask(detailTask, () => setDetailId(null))} />
     ${overlays}`;
 
@@ -409,6 +487,7 @@ function ListView({ list }) {
               <${TaskRow} key=${id} task=${t} subs=${subs[id] || []}
                 open=${!!open[id]} toggleOpen=${() => setOpen((o) => ({ ...o, [id]: !o[id] }))}
                 onChange=${load} onOpen=${openDetail} onDelete=${() => askDelTask(t)}
+                onMove=${() => setMoveTask(t)}
                 dragHandle=${onDown} dragging=${dragging} showSub=${true} />`;
           }} />`}
 
@@ -438,6 +517,230 @@ function ListView({ list }) {
 
     <button class="fab" onClick=${() => setEditor({ task: null })}>+ Aufgabe</button>
     ${overlays}
+  `;
+}
+
+/* ---------- Einkaufsliste: Artikel gruppiert nach Kategorie ---------- */
+function ShoppingView({ list }) {
+  const [rows, setRows] = useState(null);
+  const [showDone, setShowDone] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [confirm, setConfirm] = useState(null);
+  const [moveTask, setMoveTask] = useState(null);
+
+  async function load() {
+    const { data } = await sb.from("todos").select("*").eq("list_id", list.id).order("created_at");
+    setRows(data || []);
+  }
+  useEffect(() => { load(); }, [list.id]);
+
+  async function complete(t) {
+    await sb.from("todos").update({ done: true, done_at: new Date().toISOString() }).eq("id", t.id);
+    load();
+  }
+  async function restore(t) {
+    await sb.from("todos").update({ done: false, done_at: null }).eq("id", t.id);
+    load();
+  }
+  function askDelete(t) {
+    setConfirm({ text: `„${t.title}" löschen?`, yes: "Löschen", danger: true,
+      onYes: async () => { await sb.from("todos").delete().eq("id", t.id); setConfirm(null); load(); } });
+  }
+
+  if (rows === null) return html`<div class="spinner"></div>`;
+  const active = rows.filter((r) => !r.done);
+  const done = rows.filter((r) => r.done).sort((a, b) => (b.done_at || "").localeCompare(a.done_at || ""));
+
+  const groups = {};
+  active.forEach((t) => { const c = t.category || "Sonstiges"; (groups[c] ||= []).push(t); });
+  const catKeys = Object.keys(groups).sort((a, b) => catOrder(a) - catOrder(b));
+
+  const overlays = html`
+    ${adding && html`<${ShoppingAdder} listId=${list.id}
+        onClose=${() => setAdding(false)} onSaved=${() => { setAdding(false); load(); }} />`}
+    ${moveTask && html`<${MoveListModal} task=${moveTask} currentListId=${list.id}
+        onClose=${() => setMoveTask(null)} onMoved=${() => { setMoveTask(null); load(); }} />`}
+    ${confirm && html`<${ConfirmModal} text=${confirm.text} sub=${confirm.sub} yes=${confirm.yes}
+        danger=${confirm.danger} onYes=${confirm.onYes} onClose=${() => setConfirm(null)} />`}`;
+
+  return html`
+    ${active.length === 0
+      ? html`<div class="emptyhint">Einkaufsliste ist leer.<br/>Tippe unten auf <strong>+ Artikel</strong>.</div>`
+      : catKeys.map((cat) => html`
+          <h2 key=${cat}>${CAT_ICON[cat] || "📦"} ${cat}</h2>
+          ${groups[cat].sort((a, b) => a.title.localeCompare(b.title, "de")).map((t) => html`
+            <div class="task" key=${t.id}>
+              <button class="check" title="Erledigt" onClick=${() => complete(t)}></button>
+              <div class="body"><div class="ttl">${t.title}</div></div>
+              <div class="tools">
+                <button title="In andere Liste verschieben" onClick=${() => setMoveTask(t)}>↔</button>
+                <button title="Löschen" onClick=${() => askDelete(t)}>🗑</button>
+              </div>
+            </div>`)}
+        `)}
+
+    ${done.length > 0 && html`
+      <div style="margin-top:26px">
+        <button class="ghost block" style="text-align:left;display:flex;align-items:center;gap:8px"
+                onClick=${() => setShowDone((s) => !s)}>
+          <span class=${"caret" + (showDone ? " open" : "")}>▸</span> ✓ Erledigt (${done.length})
+        </button>
+        ${showDone && groupDone(done).map(([day, items]) => html`
+          <h2 key=${day}>${fmtDay(day)}</h2>
+          ${items.map((d) => html`
+            <div class="task done" key=${d.id}>
+              <button class="check" style="background:var(--primary);border-color:transparent" title="Wiederherstellen"
+                      onClick=${() => restore(d)}>✓</button>
+              <div class="body">
+                <div class="ttl">${d.title}</div>
+                <div class="meta">
+                  <span class="chip">${CAT_ICON[d.category] || "📦"} ${d.category || "Sonstiges"}</span>
+                  <span class="chip">${fmtTime(d.done_at)} Uhr</span>
+                </div>
+              </div>
+              <div class="tools">
+                <button title="Wiederherstellen" onClick=${() => restore(d)}>↩</button>
+                <button title="Endgültig löschen" onClick=${() => askDelete(d)}>🗑</button>
+              </div>
+            </div>`)}
+        `)}
+      </div>`}
+
+    <button class="fab" onClick=${() => setAdding(true)}>+ Artikel</button>
+    ${overlays}
+  `;
+}
+
+/* ---------- Einkaufsliste: Artikel hinzufügen (neu oder aus Katalog) ---------- */
+function ShoppingAdder({ listId, onClose, onSaved }) {
+  const [text, setText] = useState("");
+  const [suggestions, setSuggestions] = useState([]);
+  const [picker, setPicker] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef(null);
+  useEffect(() => { inputRef.current && inputRef.current.focus(); }, []);
+
+  useEffect(() => {
+    const q = text.trim();
+    if (q.length < 1) { setSuggestions([]); return; }
+    let cancelled = false;
+    sb.from("shopping_catalog").select("*").ilike("name", `%${q}%`)
+      .order("use_count", { ascending: false }).limit(6)
+      .then(({ data }) => { if (!cancelled) setSuggestions(data || []); });
+    return () => { cancelled = true; };
+  }, [text]);
+
+  async function upsertCatalog(name, category) {
+    const { data: existing } = await sb.from("shopping_catalog").select("id,use_count")
+      .ilike("name", name).maybeSingle();
+    if (existing) {
+      await sb.from("shopping_catalog")
+        .update({ use_count: existing.use_count + 1, last_used: new Date().toISOString(), category })
+        .eq("id", existing.id);
+    } else {
+      await sb.from("shopping_catalog").insert({ name, category, use_count: 1, last_used: new Date().toISOString() });
+    }
+  }
+
+  async function addItem(name, category) {
+    const nm = (name || "").trim();
+    if (!nm || busy) return;
+    setBusy(true);
+    const cat = category || guessCategory(nm);
+    await sb.from("todos").insert({ list_id: listId, title: nm, category: cat, sort: Date.now() });
+    await upsertCatalog(nm, cat);
+    setBusy(false);
+    onSaved();
+  }
+
+  return html`
+    <div class="overlay" onClick=${onClose}>
+      <div class="modal" onClick=${(e) => e.stopPropagation()}>
+        <div class="editbar">
+          <button class="ghost" style="width:auto" onClick=${onClose}>Abbrechen</button>
+          <strong>Artikel hinzufügen</strong>
+          <span style="width:1px"></span>
+        </div>
+        <label>Neu eintragen</label>
+        <input ref=${inputRef} placeholder="z. B. Heidelbeeren" value=${text}
+               onInput=${(e) => setText(e.target.value)}
+               onKeyDown=${(e) => e.key === "Enter" && addItem(text)} />
+        ${suggestions.length > 0 && html`
+          <div class="suggest">
+            ${suggestions.map((s) => html`
+              <button class="sugrow" key=${s.id} onClick=${() => addItem(s.name, s.category)}>
+                <span>${CAT_ICON[s.category] || "📦"}</span>
+                <span style="flex:1">${s.name}</span>
+              </button>`)}
+          </div>`}
+        <button class="primary block" style="margin-top:14px" disabled=${busy || !text.trim()} onClick=${() => addItem(text)}>
+          ${busy ? "…" : `+ „${text.trim() || "…"}" hinzufügen`}
+        </button>
+        <button class="ghost block" style="margin-top:10px" onClick=${() => setPicker(true)}>📋 Aus Liste wählen</button>
+      </div>
+    </div>
+    ${picker && html`<${CatalogPicker}
+        onPick=${(item) => { setPicker(false); addItem(item.name, item.category); }}
+        onClose=${() => setPicker(false)} />`}
+  `;
+}
+
+/* ---------- Einkaufsliste: gespeicherte Artikel wählen ---------- */
+function CatalogPicker({ onPick, onClose }) {
+  const [items, setItems] = useState(null);
+  const [mode, setMode] = useState("category"); // category | frequency
+  const [openCat, setOpenCat] = useState(null);
+
+  useEffect(() => {
+    sb.from("shopping_catalog").select("*").order("use_count", { ascending: false })
+      .then(({ data }) => setItems(data || []));
+  }, []);
+
+  return html`
+    <div class="overlay" onClick=${onClose}>
+      <div class="modal" onClick=${(e) => e.stopPropagation()}>
+        <div class="editbar">
+          <button class="ghost" style="width:auto" onClick=${onClose}>‹ Zurück</button>
+          <strong>Aus Liste wählen</strong>
+          <span style="width:1px"></span>
+        </div>
+        <div class="seg" style="margin-bottom:12px">
+          <button class=${mode === "category" ? "on" : ""} onClick=${() => setMode("category")}>Nach Kategorie</button>
+          <button class=${mode === "frequency" ? "on" : ""} onClick=${() => setMode("frequency")}>Nach Häufigkeit</button>
+        </div>
+        ${items === null
+          ? html`<div class="spinner"></div>`
+          : items.length === 0
+            ? html`<div class="emptyhint">Noch keine gespeicherten Artikel.<br/>Trage welche neu ein – sie erscheinen danach hier.</div>`
+            : mode === "frequency"
+              ? html`<div class="picklist">
+                  ${items.map((it) => html`
+                    <button class="pickrow" key=${it.id} onClick=${() => onPick(it)}>
+                      <span>${CAT_ICON[it.category] || "📦"}</span>
+                      <span style="flex:1;text-align:left">${it.name}</span>
+                      <span class="muted" style="font-size:.75rem">${it.use_count}×</span>
+                    </button>`)}
+                </div>`
+              : html`<div class="picklist">
+                  ${CATEGORIES.filter((cat) => items.some((it) => (it.category || "Sonstiges") === cat)).map((cat) => {
+                    const catItems = items.filter((it) => (it.category || "Sonstiges") === cat)
+                      .sort((a, b) => a.name.localeCompare(b.name, "de"));
+                    return html`
+                      <div key=${cat}>
+                        <button class="catrow" onClick=${() => setOpenCat(openCat === cat ? null : cat)}>
+                          <span class=${"caret" + (openCat === cat ? " open" : "")}>▸</span>
+                          <span style="flex:1;text-align:left">${CAT_ICON[cat] || "📦"} ${cat}</span>
+                          <span class="muted" style="font-size:.75rem">${catItems.length}</span>
+                        </button>
+                        ${openCat === cat && catItems.map((it) => html`
+                          <button class="pickrow sub" key=${it.id} onClick=${() => onPick(it)}>
+                            <span style="flex:1;text-align:left">${it.name}</span>
+                          </button>`)}
+                      </div>`;
+                  })}
+                </div>`}
+      </div>
+    </div>
   `;
 }
 
@@ -475,7 +778,7 @@ function SubList({ task, subs, onChange, editable }) {
 }
 
 /* ---------- Eine Aufgabe (ohne Datum in der Liste) ---------- */
-function TaskRow({ task, subs, open, toggleOpen, onChange, onOpen, onDelete, listName, dragHandle, dragging, showSub }) {
+function TaskRow({ task, subs, open, toggleOpen, onChange, onOpen, onDelete, onMove, listName, dragHandle, dragging, showSub }) {
   async function complete() {
     await sb.from("todos").update({ done: true, done_at: new Date().toISOString() })
       .or(`id.eq.${task.id},parent_id.eq.${task.id}`);
@@ -499,6 +802,7 @@ function TaskRow({ task, subs, open, toggleOpen, onChange, onOpen, onDelete, lis
       </div>
       <div class="tools">
         ${hasToggle && html`<button title="Unteraufgaben" onClick=${toggleOpen}>${open ? "▾" : "▸"}</button>`}
+        ${onMove && html`<button title="In andere Liste verschieben" onClick=${onMove}>↔</button>`}
         ${onDelete && html`<button title="Löschen" onClick=${onDelete}>🗑</button>`}
         ${dragHandle && html`<span class="drag" title="Ziehen zum Sortieren" onPointerDown=${dragHandle}>⋮⋮</span>`}
       </div>
@@ -508,7 +812,7 @@ function TaskRow({ task, subs, open, toggleOpen, onChange, onOpen, onDelete, lis
 }
 
 /* ---------- Detailseite einer Aufgabe ---------- */
-function TaskDetail({ task, subs, onBack, onChange, onEdit, onDelete }) {
+function TaskDetail({ task, subs, onBack, onChange, onEdit, onDelete, onMove }) {
   const over = task.due_at && task.due_at < new Date().toISOString();
   return html`
     <div class="detailbar">
@@ -526,7 +830,8 @@ function TaskDetail({ task, subs, onBack, onChange, onEdit, onDelete }) {
     </div>
     <h2>Unteraufgaben</h2>
     <${SubList} task=${task} subs=${subs} onChange=${onChange} editable=${true} />
-    <button class="ghost block" style="color:var(--danger);margin-top:24px" onClick=${onDelete}>🗑 Aufgabe löschen</button>
+    <button class="ghost block" style="margin-top:24px" onClick=${onMove}>↔ In andere Liste verschieben</button>
+    <button class="ghost block" style="color:var(--danger);margin-top:10px" onClick=${onDelete}>🗑 Aufgabe löschen</button>
   `;
 }
 
