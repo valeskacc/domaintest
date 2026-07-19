@@ -27,6 +27,11 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
   } catch (e) {}
 })();
 
+/* „Diesem Gerät vertrauen" – 60 Tage kein 2FA-Code nötig */
+const TRUST_KEY = "sb-mfa-trust";
+function deviceTrusted() { try { return Number(localStorage.getItem(TRUST_KEY) || 0) > Date.now(); } catch (e) { return false; } }
+function setDeviceTrust(on) { try { on ? localStorage.setItem(TRUST_KEY, String(Date.now() + 60 * 864e5)) : localStorage.removeItem(TRUST_KEY); } catch (e) {} }
+
 /* Footer-Navigation zwischen den Apps */
 function Footer({ current }) {
   const apps = [
@@ -73,7 +78,7 @@ function App() {
   if (!session) return html`<${Login} />`;
   if (aal === null) return html`<div class="spinner"></div>`;
 
-  if (aal.currentLevel === "aal1" && aal.nextLevel === "aal2")
+  if (aal.currentLevel === "aal1" && aal.nextLevel === "aal2" && !deviceTrusted())
     return html`<${MfaChallenge} onDone=${refreshAal} onLogout=${() => sb.auth.signOut()} />`;
 
   const enrolled = aal.nextLevel === "aal2";
@@ -116,11 +121,13 @@ function App() {
 function Login() {
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
+  const [stay, setStay] = useState(true);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   async function submit(e) {
     e.preventDefault();
     setBusy(true); setMsg("");
+    try { localStorage.setItem("sb-stay-pref", stay ? "1" : "0"); } catch (e) {}
     try {
       const { error } = await sb.auth.signInWithPassword({ email: email.trim(), password: pw });
       if (error) setMsg(error.message);
@@ -134,9 +141,13 @@ function Login() {
       <div class="card">
         <form onSubmit=${submit}>
           <label>E-Mail</label>
-          <input type="email" name="email" autocomplete="username" required value=${email} onInput=${(e) => setEmail(e.target.value)} />
+          <input type="email" id="email" name="email" autocomplete="username" required value=${email} onInput=${(e) => setEmail(e.target.value)} />
           <label>Passwort</label>
-          <input type="password" name="password" autocomplete="current-password" required value=${pw} onInput=${(e) => setPw(e.target.value)} />
+          <input type="password" id="current-password" name="password" autocomplete="current-password" required value=${pw} onInput=${(e) => setPw(e.target.value)} />
+          <label class="checkrow">
+            <input type="checkbox" checked=${stay} onChange=${(e) => setStay(e.target.checked)} />
+            60 Tage auf diesem Gerät angemeldet bleiben (kein 2FA)
+          </label>
           ${msg && html`<p class="error" style="margin-top:12px">${msg}</p>`}
           <button class="primary" style="margin-top:16px" disabled=${busy}>${busy ? "…" : "Anmelden"}</button>
         </form>
@@ -161,6 +172,7 @@ function MfaChallenge({ onDone, onLogout }) {
       if (e1) { setErr(e1.message); setBusy(false); return; }
       const { error: e2 } = await sb.auth.mfa.verify({ factorId: totp.id, challengeId: ch.id, code: code.trim() });
       if (e2) { setErr(e2.message); setBusy(false); return; }
+      try { setDeviceTrust(localStorage.getItem("sb-stay-pref") !== "0"); } catch (e) {}
       setBusy(false); onDone();
     } catch (err) { setErr(err?.message || String(err)); setBusy(false); }
   }

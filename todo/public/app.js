@@ -27,6 +27,11 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
   } catch (e) {}
 })();
 
+/* „Diesem Gerät vertrauen" – 60 Tage kein 2FA-Code nötig */
+const TRUST_KEY = "sb-mfa-trust";
+function deviceTrusted() { try { return Number(localStorage.getItem(TRUST_KEY) || 0) > Date.now(); } catch (e) { return false; } }
+function setDeviceTrust(on) { try { on ? localStorage.setItem(TRUST_KEY, String(Date.now() + 60 * 864e5)) : localStorage.removeItem(TRUST_KEY); } catch (e) {} }
+
 /* Footer-Navigation zwischen den Apps */
 function Footer({ current }) {
   const apps = [
@@ -182,7 +187,7 @@ function App() {
   if (session === undefined) return html`<div class="spinner"></div>`;
   if (!session) return html`<${Login} />`;
   if (aal === null) return html`<div class="spinner"></div>`;
-  if (aal.currentLevel === "aal1" && aal.nextLevel === "aal2")
+  if (aal.currentLevel === "aal1" && aal.nextLevel === "aal2" && !deviceTrusted())
     return html`<${MfaChallenge} onDone=${refreshAal} onLogout=${() => sb.auth.signOut()} />`;
 
   const go = (v) => setView(v);
@@ -373,17 +378,13 @@ function ListView({ list }) {
   const { top, subs } = buildTree(active);
   const detailTask = detailId ? rows.find((r) => r.id === detailId && !r.done) : null;
 
-  // Reihenfolge: Datum zuerst, dann Priorität, dann frei sortierbar (Drag & Drop)
-  const dated = top.filter((t) => t.due_at).sort((a, b) => a.due_at.localeCompare(b.due_at));
-  const prioed = top.filter((t) => !t.due_at && t.priority).sort((a, b) => a.priority - b.priority);
-  const manual = top.filter((t) => !t.due_at && !t.priority)
-    .sort((a, b) => (a.sort - b.sort) || (a.created_at || "").localeCompare(b.created_at || ""));
-  const manualById = {}; manual.forEach((t) => (manualById[t.id] = t));
-
-  const staticRow = (t) => html`
-    <${TaskRow} key=${t.id} task=${t} subs=${subs[t.id] || []}
-      open=${!!open[t.id]} toggleOpen=${() => setOpen((o) => ({ ...o, [t.id]: !o[t.id] }))}
-      onChange=${load} onOpen=${openDetail} onDelete=${() => askDelTask(t)} showSub=${true} />`;
+  // In einer Liste sind alle Aufgaben frei per Drag & Drop sortierbar.
+  // Reihenfolge = manuelle Sortierung (sort), dann Datum, dann Erstellzeit.
+  const ordered = top.slice().sort((a, b) =>
+    ((a.sort || 0) - (b.sort || 0)) ||
+    ((a.due_at || "9999").localeCompare(b.due_at || "9999")) ||
+    ((a.created_at || "").localeCompare(b.created_at || "")));
+  const byId = {}; ordered.forEach((t) => (byId[t.id] = t));
 
   const overlays = html`
     ${editor && html`<${TaskEditor} listId=${list.id} task=${editor.task}
@@ -401,18 +402,15 @@ function ListView({ list }) {
   return html`
     ${top.length === 0
       ? html`<div class="emptyhint">Noch keine offenen Aufgaben in „${list.name}".<br/>Tippe unten auf <strong>+ Aufgabe</strong>.</div>`
-      : html`
-          ${dated.map(staticRow)}
-          ${prioed.map(staticRow)}
-          <${Sortable} ids=${manual.map((t) => t.id)} movedRef=${movedRef} onCommit=${commit}
-            render=${(id, onDown, dragging) => {
-              const t = manualById[id]; if (!t) return null;
-              return html`
-                <${TaskRow} key=${id} task=${t} subs=${subs[id] || []}
-                  open=${!!open[id]} toggleOpen=${() => setOpen((o) => ({ ...o, [id]: !o[id] }))}
-                  onChange=${load} onOpen=${openDetail} onDelete=${() => askDelTask(t)}
-                  dragHandle=${onDown} dragging=${dragging} showSub=${true} />`;
-            }} />`}
+      : html`<${Sortable} ids=${ordered.map((t) => t.id)} movedRef=${movedRef} onCommit=${commit}
+          render=${(id, onDown, dragging) => {
+            const t = byId[id]; if (!t) return null;
+            return html`
+              <${TaskRow} key=${id} task=${t} subs=${subs[id] || []}
+                open=${!!open[id]} toggleOpen=${() => setOpen((o) => ({ ...o, [id]: !o[id] }))}
+                onChange=${load} onOpen=${openDetail} onDelete=${() => askDelTask(t)}
+                dragHandle=${onDown} dragging=${dragging} showSub=${true} />`;
+          }} />`}
 
     ${done.length > 0 && html`
       <div style="margin-top:26px">
@@ -595,11 +593,13 @@ function TaskEditor({ listId, task, onClose, onSaved }) {
 function Login() {
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
+  const [stay, setStay] = useState(true);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   async function submit(e) {
     e.preventDefault();
     setBusy(true); setMsg("");
+    try { localStorage.setItem("sb-stay-pref", stay ? "1" : "0"); } catch (e) {}
     try {
       const { error } = await sb.auth.signInWithPassword({ email: email.trim(), password: pw });
       if (error) setMsg(error.message);
@@ -613,9 +613,13 @@ function Login() {
       <div class="card" style="max-width:380px;margin:0 auto">
         <form onSubmit=${submit}>
           <label>E-Mail</label>
-          <input type="email" name="email" autocomplete="username" required value=${email} onInput=${(e) => setEmail(e.target.value)} />
+          <input type="email" id="email" name="email" autocomplete="username" required value=${email} onInput=${(e) => setEmail(e.target.value)} />
           <label>Passwort</label>
-          <input type="password" name="password" autocomplete="current-password" required value=${pw} onInput=${(e) => setPw(e.target.value)} />
+          <input type="password" id="current-password" name="password" autocomplete="current-password" required value=${pw} onInput=${(e) => setPw(e.target.value)} />
+          <label class="checkrow">
+            <input type="checkbox" checked=${stay} onChange=${(e) => setStay(e.target.checked)} />
+            60 Tage auf diesem Gerät angemeldet bleiben (kein 2FA)
+          </label>
           ${msg && html`<p class="error" style="margin-top:12px">${msg}</p>`}
           <button class="primary block" style="margin-top:16px" disabled=${busy}>${busy ? "…" : "Anmelden"}</button>
         </form>
@@ -640,6 +644,7 @@ function MfaChallenge({ onDone, onLogout }) {
       if (e1) { setErr(e1.message); setBusy(false); return; }
       const { error: e2 } = await sb.auth.mfa.verify({ factorId: totp.id, challengeId: ch.id, code: code.trim() });
       if (e2) { setErr(e2.message); setBusy(false); return; }
+      try { setDeviceTrust(localStorage.getItem("sb-stay-pref") !== "0"); } catch (e) {}
       setBusy(false); onDone();
     } catch (err) { setErr(err?.message || String(err)); setBusy(false); }
   }
