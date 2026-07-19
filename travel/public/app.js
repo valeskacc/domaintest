@@ -8,8 +8,19 @@ const html = htm.bind(h);
 const SUPABASE_URL = "https://qcsezegptoblkpvwhtzx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_PkA4IRR8xTrug-JgY-vN5g_EsH34zNB";
 
+// Jeder Netzwerk-Aufruf (Auth-Refresh, Datenabfragen) bekommt hier ein kurzes
+// eigenes Zeitlimit. Ohne das wartet der Client bei totalem Verbindungsverlust
+// (z. B. Flugmodus) auf das systemeigene Timeout des Betriebssystems - das kann
+// 30-40+ Sekunden dauern, bevor überhaupt auf den Offline-Cache zurückgefallen wird.
+function fetchWithTimeout(url, options, ms = 8000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { ...options, signal: ctrl.signal }).finally(() => clearTimeout(t));
+}
+
 const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+  global: { fetch: (url, options) => fetchWithTimeout(url, options, 8000) },
 });
 
 /* Offline: App-Hülle + CDN-Module per Service Worker cachen, damit die App auch ganz ohne Netz öffnet */
@@ -61,10 +72,10 @@ function brokerCookieClear() {
 }
 async function brokerCall(action, payload) {
   try {
-    const res = await fetch(BROKER_URL, {
+    const res = await fetchWithTimeout(BROKER_URL, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ action, ...payload }),
-    });
+    }, 6000);
     const body = await res.json().catch(() => null);
     return { ok: res.ok, body };
   } catch (e) { return { ok: false, networkError: true }; }

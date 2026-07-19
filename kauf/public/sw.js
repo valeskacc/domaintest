@@ -5,9 +5,12 @@
      auffrischen" – ohne diese Module könnte die App offline gar nicht erst starten,
      weil ihre import-Anweisungen sonst ohne Netz fehlschlagen.
    Wichtig: eine fetch-Behandlung darf NIE ablehnen (reject) – Safari zeigt dann
-   "Safari kann die Seite nicht öffnen" statt einer sinnvollen Rückfalllösung. */
-const SHELL_CACHE = "shell-v2";
-const CDN_CACHE = "cdn-v3";
+   "Safari kann die Seite nicht öffnen" statt einer sinnvollen Rückfalllösung.
+   Genauso wichtig: jeder fetch() bekommt ein kurzes eigenes Zeitlimit – sonst wartet
+   der Browser bei totalem Verbindungsverlust (Flugmodus) auf das systemeigene
+   Timeout (kann 30-40+ Sekunden dauern), bevor überhaupt der Cache greift. */
+const SHELL_CACHE = "shell-v3";
+const CDN_CACHE = "cdn-v4";
 const PRECACHE_URLS = ["/", "/index.html", "/app.js"];
 const CDN_HOST = "esm.sh"; // nur das eigentliche Modul-CDN cachen, keine anderen APIs (z. B. Wetterdaten)
 
@@ -52,10 +55,16 @@ const OFFLINE_FALLBACK = new Response(
   { status: 503, headers: { "Content-Type": "text/html; charset=utf-8" } }
 );
 
+function fetchWithTimeout(req, ms = 6000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  return fetch(req, { signal: ctrl.signal }).finally(() => clearTimeout(t));
+}
+
 async function networkFirst(req, cacheName) {
   const cache = await caches.open(cacheName);
   try {
-    const res = await fetch(req);
+    const res = await fetchWithTimeout(req, 6000);
     if (res && res.ok) cache.put(req, res.clone());
     return res;
   } catch (e) {
@@ -67,7 +76,7 @@ async function networkFirst(req, cacheName) {
 async function staleWhileRevalidate(req, cacheName) {
   const cache = await caches.open(cacheName);
   const cached = await cache.match(req);
-  const fetchPromise = fetch(req)
+  const fetchPromise = fetchWithTimeout(req, 6000)
     .then((res) => { if (res && res.ok) cache.put(req, res.clone()); return res; })
     .catch(() => null);
   return cached || (await fetchPromise) || new Response("", { status: 504 });
