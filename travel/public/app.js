@@ -190,13 +190,22 @@ const TAGS = [
 ];
 
 /* ---------- Helfer ---------- */
-// Liest die User-ID aus der lokal bereits vorhandenen Sitzung, statt sie per
-// sb.auth.getUser() jedes Mal über einen Netzwerk-Roundtrip neu zu bestätigen.
-// getUser() blieb bei schwacher Verbindung teils dauerhaft hängen und ließ
-// Ansichten wie eine Reise dann endlos laden.
-async function currentUserId() {
-  const { data } = await sb.auth.getSession();
-  return data.session ? data.session.user.id : null;
+// Aktuelle Sitzung ausschließlich als lokale Referenz halten (von App() bei jeder
+// Änderung aktualisiert) statt sie in tief verschachtelten Funktionen per
+// sb.auth.getUser()/getSession() erneut abzufragen. Beides kann bei schwacher
+// Verbindung einen Netzwerk-Roundtrip auslösen und dauerhaft hängen bleiben –
+// currentUserId() ist dadurch komplett synchron und netzunabhängig.
+let CURRENT_SESSION = null;
+function currentUserId() {
+  return CURRENT_SESSION ? CURRENT_SESSION.user.id : null;
+}
+// Läuft eine Anfrage länger als ms, zeigen wir statt eines Dauer-Spinners einen
+// Fehler mit "Erneut versuchen" – so bleibt die App nie unsichtbar hängen.
+function withTimeout(promise, ms = 12000, label = "Zeitüberschreitung") {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(label + " – bitte erneut versuchen.")), ms)),
+  ]);
 }
 
 function daysBetween(a, b) {
@@ -245,7 +254,7 @@ function contextTags(trip, legs) {
 
 async function recordSignal(kind, name, tags, category_id) {
   try {
-    const uid = await currentUserId();
+    const uid = currentUserId();
     if (!uid) return;
     await sb.from("pack_signals").insert({
       user_id: uid, item_name: name, kind, tags: tags || [], category_id: category_id || null,
@@ -364,7 +373,7 @@ async function loadMeta() {
 }
 
 async function duplicateTrip(id) {
-  const uid = await currentUserId();
+  const uid = currentUserId();
   const { data: src } = await sb.from("trips").select("*").eq("id", id).single();
   if (!src) return null;
   const { data: nt } = await sb.from("trips").insert({
@@ -507,11 +516,13 @@ function App() {
     let cancelled = false;
     (async () => {
       const { data } = await sb.auth.getSession();
-      if (data.session) { if (!cancelled) setSession(data.session); return; }
+      if (data.session) { CURRENT_SESSION = data.session; if (!cancelled) setSession(data.session); return; }
       const s = await brokerRedeem();
+      CURRENT_SESSION = s || null;
       if (!cancelled) setSession(s || null);
     })();
     const { data: sub } = sb.auth.onAuthStateChange((event, s) => {
+      CURRENT_SESSION = s ?? null;
       setSession(s ?? null);
       if (s && (event === "SIGNED_IN" || event === "TOKEN_REFRESHED")) brokerMint(s);
     });
@@ -947,7 +958,7 @@ function Wizard({ go, editId }) {
       return;
     }
 
-    const uid = await currentUserId();
+    const uid = currentUserId();
     const { data: trip, error } = await sb.from("trips")
       .insert({ user_id: uid, ...tripData }).select().single();
     if (error) { setBusy(false); return setErr(error.message); }
@@ -1073,6 +1084,7 @@ function TripView({ tripId, go }) {
   const [trip, setTrip] = useState(null);
   const [items, setItems] = useState(null);
   const [legs, setLegs] = useState([]);
+  const [loadError, setLoadError] = useState(null);
   const [collapsed, setCollapsed] = useState(() => new Set());
   const [addCat, setAddCat] = useState(null);   // Kategorie-Key, in dem gerade hinzugefügt wird
   const [addText, setAddText] = useState("");
@@ -1085,16 +1097,23 @@ function TripView({ tripId, go }) {
   const [gCat, setGCat] = useState("");
 
   async function reload() {
-    if (!categories.length) await loadMeta();
-    const uid = await currentUserId();
-    const [{ data: t }, { data: it }, { data: lg }, { data: prof }] = await Promise.all([
-      sb.from("trips").select("*").eq("id", tripId).single(),
-      sb.from("trip_items").select("*").eq("trip_id", tripId).eq("removed", false).order("created_at"),
-      sb.from("trip_legs").select("*").eq("trip_id", tripId).order("position"),
-      sb.from("profiles").select("category_order").eq("id", uid).single(),
-    ]);
-    setTrip(t); setItems(it || []); setLegs(lg || []);
-    setCatOrder(Array.isArray(prof?.category_order) ? prof.category_order : []);
+    setLoadError(null);
+    try {
+      await withTimeout((async () => {
+        if (!categories.length) await loadMeta();
+        const uid = currentUserId();
+        const [{ data: t }, { data: it }, { data: lg }, { data: prof }] = await Promise.all([
+          sb.from("trips").select("*").eq("id", tripId).single(),
+          sb.from("trip_items").select("*").eq("trip_id", tripId).eq("removed", false).order("created_at"),
+          sb.from("trip_legs").select("*").eq("trip_id", tripId).order("position"),
+          sb.from("profiles").select("category_order").eq("id", uid).single(),
+        ]);
+        setTrip(t); setItems(it || []); setLegs(lg || []);
+        setCatOrder(Array.isArray(prof?.category_order) ? prof.category_order : []);
+      })(), 12000, "Laden der Reise dauert zu lange");
+    } catch (e) {
+      setLoadError(e?.message || String(e));
+    }
   }
 
   async function moveCat(id, dir) {
@@ -1104,7 +1123,7 @@ function TripView({ tripId, go }) {
     if (j < 0 || j >= ids.length) return;
     [ids[i], ids[j]] = [ids[j], ids[i]];
     setCatOrder(ids);
-    const uid = await currentUserId();
+    const uid = currentUserId();
     await sb.from("profiles").update({ category_order: ids }).eq("id", uid);
   }
   useEffect(() => { reload(); }, [tripId]);
@@ -1142,6 +1161,12 @@ function TripView({ tripId, go }) {
     await removeTrip(tripId); go({ name: "home" });
   }
 
+  if (loadError) return html`
+    <div class="card center" style="margin-top:20px">
+      <p class="error" style="margin-top:0">⚠️ ${loadError}</p>
+      <button class="primary block" onClick=${reload}>Erneut versuchen</button>
+      <button class="ghost block" style="margin-top:10px" onClick=${() => go({ name: "home" })}>Zurück zur Übersicht</button>
+    </div>`;
   if (!trip || !items) return html`<div class="spinner"></div>`;
 
   const catIdx = (x) => { const i = catOrder.indexOf(x); return i === -1 ? 999 : i; };
@@ -1402,6 +1427,7 @@ function Review({ tripId, go }) {
   const [legs, setLegs] = useState([]);
   const [items, setItems] = useState(null);
   const [catOrder, setCatOrder] = useState([]);
+  const [loadError, setLoadError] = useState(null);
   const [unused, setUnused] = useState({}); // trip_item.id -> true (= unnötig)
   const [missed, setMissed] = useState([]);
   const [mName, setMName] = useState("");
@@ -1411,21 +1437,27 @@ function Review({ tripId, go }) {
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      if (!categories.length) await loadMeta();
-      setMCat(categories[0]?.id || "");
-      const uid = await currentUserId();
-      const [{ data: t }, { data: lg }, { data: it }, { data: prof }] = await Promise.all([
-        sb.from("trips").select("*").eq("id", tripId).single(),
-        sb.from("trip_legs").select("*").eq("trip_id", tripId),
-        sb.from("trip_items").select("*").eq("trip_id", tripId).eq("removed", false).order("created_at"),
-        sb.from("profiles").select("category_order").eq("id", uid).single(),
-      ]);
-      setTrip(t); setLegs(lg || []); setItems(it || []);
-      setCatOrder(Array.isArray(prof?.category_order) ? prof.category_order : []);
-    })();
-  }, [tripId]);
+  async function load() {
+    setLoadError(null);
+    try {
+      await withTimeout((async () => {
+        if (!categories.length) await loadMeta();
+        setMCat(categories[0]?.id || "");
+        const uid = currentUserId();
+        const [{ data: t }, { data: lg }, { data: it }, { data: prof }] = await Promise.all([
+          sb.from("trips").select("*").eq("id", tripId).single(),
+          sb.from("trip_legs").select("*").eq("trip_id", tripId),
+          sb.from("trip_items").select("*").eq("trip_id", tripId).eq("removed", false).order("created_at"),
+          sb.from("profiles").select("category_order").eq("id", uid).single(),
+        ]);
+        setTrip(t); setLegs(lg || []); setItems(it || []);
+        setCatOrder(Array.isArray(prof?.category_order) ? prof.category_order : []);
+      })(), 12000, "Laden dauert zu lange");
+    } catch (e) {
+      setLoadError(e?.message || String(e));
+    }
+  }
+  useEffect(() => { load(); }, [tripId]);
 
   const toggleUnused = (id) => setUnused((m) => ({ ...m, [id]: !m[id] }));
   const toggle = (key) => setCollapsed((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
@@ -1436,7 +1468,7 @@ function Review({ tripId, go }) {
     if (j < 0 || j >= ids.length) return;
     [ids[i], ids[j]] = [ids[j], ids[i]];
     setCatOrder(ids);
-    const uid = await currentUserId();
+    const uid = currentUserId();
     await sb.from("profiles").update({ category_order: ids }).eq("id", uid);
   }
   function addMissed() {
@@ -1447,7 +1479,7 @@ function Review({ tripId, go }) {
   async function save() {
     setBusy(true);
     const ctx = contextTags(trip, legs);
-    const uid = await currentUserId();
+    const uid = currentUserId();
     // Alles, was NICHT als unnötig markiert wurde, gilt als gebraucht
     const rows = items.map((it) => ({
       user_id: uid, item_name: it.name, kind: unused[it.id] ? "unused" : "used",
@@ -1461,6 +1493,12 @@ function Review({ tripId, go }) {
     go({ name: "trip", tripId });
   }
 
+  if (loadError) return html`
+    <div class="card center" style="margin-top:20px">
+      <p class="error" style="margin-top:0">⚠️ ${loadError}</p>
+      <button class="primary block" onClick=${load}>Erneut versuchen</button>
+      <button class="ghost block" style="margin-top:10px" onClick=${() => go({ name: "home" })}>Zurück zur Übersicht</button>
+    </div>`;
   if (!trip || !items) return html`<div class="spinner"></div>`;
 
   const catIdx = (x) => { const i = catOrder.indexOf(x); return i === -1 ? 999 : i; };
