@@ -64,6 +64,8 @@ function fmtDateTime(iso) {
   const d = new Date(iso);
   return dayLabel(localYmd(d)) + ", " + fmtTime(iso) + " Uhr";
 }
+// Kompakte Datumsanzeige für die Listenzeile (klein)
+const fmtDueShort = (iso) => iso ? dayLabel(localYmd(new Date(iso))) : "";
 // Gruppiert erledigte Aufgaben nach Erledigungs-Datum (neueste zuerst)
 function groupDone(done) {
   const map = {};
@@ -84,45 +86,62 @@ function buildTree(rows) {
 function Sortable({ ids, render, onCommit, movedRef }) {
   const [order, setOrder] = useState(ids);
   const orderRef = useRef(ids);
+  const commitRef = useRef(onCommit);
   const dragId = useRef(null);
   const moved = useRef(false);
   const contRef = useRef(null);
-  useEffect(() => { setOrder(ids); orderRef.current = ids; }, [ids.join("|")]);
+  commitRef.current = onCommit;
   orderRef.current = order;
+  useEffect(() => { setOrder(ids); orderRef.current = ids; }, [ids.join("|")]);
+
+  useEffect(() => {
+    function onMove(e) {
+      if (dragId.current == null) return;
+      e.preventDefault();
+      const cont = contRef.current; if (!cont) return;
+      const rows = Array.from(cont.querySelectorAll("[data-sid]"));
+      const y = e.clientY;
+      let beforeId = null;
+      for (const r of rows) {
+        const b = r.getBoundingClientRect();
+        if (y < b.top + b.height / 2) { beforeId = r.getAttribute("data-sid"); break; }
+      }
+      setOrder((cur) => {
+        const id = dragId.current;
+        const at = cur.indexOf(id);
+        const without = cur.filter((x) => x !== id);
+        let idx = beforeId == null ? without.length : without.indexOf(beforeId);
+        if (idx < 0) idx = without.length;
+        without.splice(idx, 0, id);
+        if (without.indexOf(id) !== at) moved.current = true;
+        return without;
+      });
+    }
+    function onUp() {
+      if (dragId.current == null) return;
+      dragId.current = null;
+      document.body.style.userSelect = "";
+      if (moved.current) { if (movedRef) movedRef.current = Date.now(); commitRef.current(orderRef.current); }
+      moved.current = false;
+    }
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, []);
 
   function start(e, id) {
+    e.preventDefault();
     dragId.current = id; moved.current = false;
-    try { e.target.setPointerCapture(e.pointerId); } catch (_) {}
+    document.body.style.userSelect = "none";
   }
-  function move(e) {
-    if (dragId.current == null) return;
-    const cont = contRef.current; if (!cont) return;
-    const rows = Array.from(cont.querySelectorAll("[data-sid]"));
-    const y = e.clientY;
-    let beforeId = null;
-    for (const r of rows) {
-      const b = r.getBoundingClientRect();
-      if (y < b.top + b.height / 2) { beforeId = r.getAttribute("data-sid"); break; }
-    }
-    setOrder((cur) => {
-      const id = dragId.current;
-      const at = cur.indexOf(id);
-      const without = cur.filter((x) => x !== id);
-      let idx = beforeId == null ? without.length : without.indexOf(beforeId);
-      if (idx < 0) idx = without.length;
-      without.splice(idx, 0, id);
-      if (without.indexOf(id) !== at) moved.current = true;
-      return without;
-    });
-  }
-  function end() {
-    if (dragId.current == null) return;
-    dragId.current = null;
-    if (moved.current) { if (movedRef) movedRef.current = Date.now(); onCommit(orderRef.current); }
-    moved.current = false;
-  }
+
   return html`
-    <div ref=${contRef} onPointerMove=${move} onPointerUp=${end} onPointerCancel=${end}>
+    <div ref=${contRef}>
       ${order.map((id) => render(id, (e) => start(e, id), dragId.current === id))}
     </div>`;
 }
@@ -470,8 +489,9 @@ function TaskRow({ task, subs, open, toggleOpen, onChange, onOpen, onDelete, lis
       <button class=${"check" + (task.priority === 1 ? " p1" : "")} title="Erledigt" onClick=${complete}></button>
       <div class="body" style=${onOpen ? "cursor:pointer" : ""} onClick=${() => onOpen && onOpen(task)}>
         <div class="ttl">${task.title}</div>
-        ${(listName || task.priority || subs.length > 0) && html`
+        ${(task.due_at || listName || task.priority || subs.length > 0) && html`
           <div class="meta">
+            ${task.due_at && html`<span class=${"chip due" + (task.due_at < new Date().toISOString() ? " over" : "")}>📅 ${fmtDueShort(task.due_at)}</span>`}
             ${listName && html`<span class="chip">🗂 ${listName}</span>`}
             ${task.priority && html`<span class="chip prio">⭐ P${task.priority}</span>`}
             ${subs.length > 0 && html`<span class="chip" style="cursor:pointer"
