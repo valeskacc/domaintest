@@ -12,6 +12,9 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
 });
 
+/* Offline: App-Hülle + CDN-Module per Service Worker cachen, damit die App auch ganz ohne Netz öffnet */
+if ("serviceWorker" in navigator) { navigator.serviceWorker.register("/sw.js").catch(() => {}); }
+
 /* Aufräumen: früher gesetzte, zu große Login-Cookies auf .valeska.cc entfernen –
    sie ließen Cloudflare Anfragen mit HTTP 403 ablehnen. Die Anmeldung bleibt pro
    App über den localStorage erhalten. */
@@ -26,6 +29,63 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
     }
   } catch (e) {}
 })();
+
+/* ---------- Cross-App SSO über einen Session-Vermittler (Edge Function) ----------
+   Ein zufälliger, bedeutungsloser Broker-Token (keine echten Zugangsdaten!) liegt in
+   einem kleinen Cookie auf .valeska.cc. Öffnet eine andere *.valeska.cc-App frisch
+   (neuer Tab, eigenes Home-Bildschirm-Icon), löst sie den Token bei der Edge Function
+   ein und meldet sich damit automatisch an – inkl. bereits bestätigtem 2FA-Status. */
+const BROKER_URL = "https://qcsezegptoblkpvwhtzx.supabase.co/functions/v1/session-broker";
+const BROKER_COOKIE = "vsk-sso";
+function brokerCookieGet() {
+  const m = document.cookie.match(new RegExp("(?:^|; )" + BROKER_COOKIE + "=([^;]+)"));
+  return m ? m[1] : null;
+}
+function brokerCookieSet(id) {
+  const domain = location.hostname.endsWith("valeska.cc") ? "; domain=.valeska.cc" : "";
+  document.cookie = BROKER_COOKIE + "=" + id + "; path=/; max-age=" + (60 * 86400) + "; SameSite=Lax; Secure" + domain;
+}
+function brokerCookieClear() {
+  const domain = location.hostname.endsWith("valeska.cc") ? "; domain=.valeska.cc" : "";
+  document.cookie = BROKER_COOKIE + "=; path=/; max-age=0; SameSite=Lax; Secure" + domain;
+}
+async function brokerCall(action, payload) {
+  try {
+    const res = await fetch(BROKER_URL, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, ...payload }),
+    });
+    const body = await res.json().catch(() => null);
+    return { ok: res.ok, body };
+  } catch (e) { return { ok: false, networkError: true }; }
+}
+async function brokerMint(session) {
+  if (!session) return;
+  const r = await brokerCall("mint", { access_token: session.access_token, refresh_token: session.refresh_token });
+  if (r.ok && r.body && r.body.broker_id) brokerCookieSet(r.body.broker_id);
+}
+async function brokerRedeem() {
+  const id = brokerCookieGet();
+  if (!id) return null;
+  const r = await brokerCall("redeem", { broker_id: id });
+  // Netzfehler (z. B. offline): Cookie unangetastet lassen, es beim nächsten Mal erneut
+  // versuchen. Nur eine echte "ungültig"-Antwort vom Server löscht ihn wirklich.
+  if (r.networkError) return null;
+  if (!r.ok || !r.body || !r.body.refresh_token) { brokerCookieClear(); return null; }
+  const { data, error } = await sb.auth.refreshSession({ refresh_token: r.body.refresh_token });
+  if (error || !data.session) { brokerCookieClear(); return null; }
+  brokerMint(data.session);
+  return data.session;
+}
+async function brokerRevoke() {
+  const id = brokerCookieGet();
+  brokerCookieClear();
+  if (id) brokerCall("revoke", { broker_id: id });
+}
+async function signOutEverywhere() {
+  await brokerRevoke();
+  await sb.auth.signOut();
+}
 
 /* „Diesem Gerät vertrauen" – 60 Tage kein 2FA-Code nötig */
 const TRUST_KEY = "sb-mfa-trust";
@@ -55,6 +115,87 @@ function fmtDate(iso) {
   return new Date(iso).toLocaleDateString("de-DE", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+/* ---------- Offline: letzten Datenstand cachen + Änderungen puffern ----------
+   Beim Laden wird der Erfolg im localStorage gesichert; schlägt ein Ladevorgang
+   (kein Netz) fehl, zeigen wir stattdessen den letzten bekannten Stand. Schreibende
+   Aktionen, die offline oder wegen eines Netzfehlers scheitern, landen in einer
+   kleinen Warteschlange und werden automatisch nachgeholt, sobald wieder Netz da ist. */
+function cacheGet(key) {
+  try { const raw = localStorage.getItem("cache:" + key); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
+}
+function cacheSet(key, data) {
+  try { localStorage.setItem("cache:" + key, JSON.stringify({ data, at: Date.now() })); } catch (e) {}
+}
+async function loadWithCache(key, loader) {
+  try {
+    if (!navigator.onLine) throw new Error("offline");
+    const data = await loader();
+    cacheSet(key, data);
+    return { data, offline: false };
+  } catch (e) {
+    const cached = cacheGet(key);
+    return { data: cached ? cached.data : null, offline: true, at: cached ? cached.at : null };
+  }
+}
+
+const OUTBOX_KEY = "cache:outbox";
+function outboxGet() { try { return JSON.parse(localStorage.getItem(OUTBOX_KEY) || "[]"); } catch (e) { return []; } }
+function outboxSet(q) { try { localStorage.setItem(OUTBOX_KEY, JSON.stringify(q)); } catch (e) {} }
+function outboxPush(op) { const q = outboxGet(); q.push(op); outboxSet(q); window.dispatchEvent(new Event("outbox-changed")); }
+function applyMatch(query, op) {
+  if (op.matchOr) return query.or(op.matchOr);
+  Object.entries(op.match || {}).forEach(([k, v]) => { query = query.eq(k, v); });
+  return query;
+}
+async function outboxFlush() {
+  const q = outboxGet();
+  if (!q.length || !navigator.onLine) return 0;
+  let ok = 0; const remaining = [];
+  for (const op of q) {
+    try {
+      let query = sb.from(op.table);
+      if (op.type === "insert") query = query.insert(op.payload);
+      else if (op.type === "update") query = applyMatch(query.update(op.payload), op);
+      else if (op.type === "delete") query = applyMatch(query.delete(), op);
+      const { error } = await query;
+      if (error) remaining.push(op); else ok++;
+    } catch (e) { remaining.push(op); }
+  }
+  outboxSet(remaining);
+  window.dispatchEvent(new Event("outbox-changed"));
+  if (ok > 0) window.dispatchEvent(new Event("outbox-flushed"));
+  return ok;
+}
+async function trySb(promise, queueOp) {
+  if (!navigator.onLine) { outboxPush(queueOp); return { queued: true }; }
+  try {
+    const { error } = await promise;
+    if (error) { outboxPush(queueOp); return { queued: true, error }; }
+    return { queued: false };
+  } catch (e) { outboxPush(queueOp); return { queued: true, error: e }; }
+}
+function useOutbox() {
+  const [n, setN] = useState(outboxGet().length);
+  useEffect(() => {
+    function refresh() { setN(outboxGet().length); }
+    async function tryFlush() { await outboxFlush(); refresh(); }
+    window.addEventListener("outbox-changed", refresh);
+    window.addEventListener("online", tryFlush);
+    tryFlush();
+    return () => { window.removeEventListener("outbox-changed", refresh); window.removeEventListener("online", tryFlush); };
+  }, []);
+  return n;
+}
+function OfflineBanner({ offline, at, pending }) {
+  if (!offline && !pending) return "";
+  return html`
+    <div class="offlinebar">
+      ${offline
+        ? html`🔌 Offline${at ? " – Stand " + new Date(at).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) + " Uhr" : ""}`
+        : html`🔄 ${pending} Änderung${pending === 1 ? "" : "en"} werden synchronisiert …`}
+    </div>`;
+}
+
 /* ---------- Bestätigungs-Dialog ---------- */
 function ConfirmModal({ text, sub, yes = "OK", danger, onYes, onClose }) {
   return html`
@@ -80,9 +221,18 @@ function App() {
     setAal(data || { currentLevel: "aal1", nextLevel: "aal1" });
   }
   useEffect(() => {
-    sb.auth.getSession().then(({ data }) => setSession(data.session ?? null));
-    const { data: sub } = sb.auth.onAuthStateChange((_e, s) => setSession(s ?? null));
-    return () => sub.subscription.unsubscribe();
+    let cancelled = false;
+    (async () => {
+      const { data } = await sb.auth.getSession();
+      if (data.session) { if (!cancelled) setSession(data.session); return; }
+      const s = await brokerRedeem();
+      if (!cancelled) setSession(s || null);
+    })();
+    const { data: sub } = sb.auth.onAuthStateChange((event, s) => {
+      setSession(s ?? null);
+      if (s && (event === "SIGNED_IN" || event === "TOKEN_REFRESHED")) brokerMint(s);
+    });
+    return () => { cancelled = true; sub.subscription.unsubscribe(); };
   }, []);
   useEffect(() => { if (session) refreshAal(); else setAal(null); }, [session]);
 
@@ -90,13 +240,13 @@ function App() {
   if (!session) return html`<${Login} />`;
   if (aal === null) return html`<div class="spinner"></div>`;
   if (aal.currentLevel === "aal1" && aal.nextLevel === "aal2" && !deviceTrusted())
-    return html`<${MfaChallenge} onDone=${refreshAal} onLogout=${() => sb.auth.signOut()} />`;
+    return html`<${MfaChallenge} onDone=${refreshAal} onLogout=${signOutEverywhere} />`;
 
   return html`
     <header class="appbar">
       <div class="title">♻️ Kauf → 2 raus</div>
       <a href="https://home.valeska.cc" style="text-decoration:none"><button>⌂ Home</button></a>
-      <button onClick=${() => sb.auth.signOut()}>Logout</button>
+      <button onClick=${signOutEverywhere}>Logout</button>
     </header>
     <main>
       <${Board} />
@@ -108,40 +258,77 @@ function App() {
 /* ---------- Board ---------- */
 function Board() {
   const [data, setData] = useState(null); // { purchases, gmap }
+  const [offline, setOffline] = useState(false);
+  const [offlineAt, setOfflineAt] = useState(null);
+  const pending = useOutbox();
   const [tab, setTab] = useState("open");
   const [editor, setEditor] = useState(false);
   const [confirm, setConfirm] = useState(null);
 
-  async function load() {
-    const [{ data: p }, { data: g }] = await Promise.all([
-      sb.from("purchases").select("*").order("created_at", { ascending: false }),
-      sb.from("give_ups").select("*").order("created_at"),
-    ]);
+  function buildData(purchases, gives) {
     const gmap = {};
-    (g || []).forEach((x) => { (gmap[x.purchase_id] ||= []).push(x); });
-    setData({ purchases: p || [], gmap });
+    (gives || []).forEach((x) => { (gmap[x.purchase_id] ||= []).push(x); });
+    return { purchases: purchases || [], gmap };
+  }
+
+  async function load() {
+    const r = await loadWithCache("kauf_data", async () => {
+      const [{ data: p, error: pe }, { data: g, error: ge }] = await Promise.all([
+        sb.from("purchases").select("*").order("created_at", { ascending: false }),
+        sb.from("give_ups").select("*").order("created_at"),
+      ]);
+      if (pe || ge) throw (pe || ge);
+      return { purchases: p || [], gives: g || [] };
+    });
+    const raw = r.data || { purchases: [], gives: [] };
+    setData(buildData(raw.purchases, raw.gives));
+    setOffline(r.offline); setOfflineAt(r.at);
   }
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const onFlushed = () => load();
+    window.addEventListener("outbox-flushed", onFlushed);
+    return () => window.removeEventListener("outbox-flushed", onFlushed);
+  }, []);
 
   async function addGive(p, name) {
     const n = name.trim(); if (!n) return;
     const cnt = (data.gmap[p.id] || []).length;
-    await sb.from("give_ups").insert({ purchase_id: p.id, name: n });
-    if (cnt + 1 >= 2 && !p.resolved_at)
-      await sb.from("purchases").update({ resolved_at: new Date().toISOString() }).eq("id", p.id);
-    load();
+    const give = { id: crypto.randomUUID(), purchase_id: p.id, name: n, created_at: new Date().toISOString() };
+    const willResolve = cnt + 1 >= 2 && !p.resolved_at;
+    setData((cur) => ({
+      gmap: { ...cur.gmap, [p.id]: [...(cur.gmap[p.id] || []), give] },
+      purchases: willResolve
+        ? cur.purchases.map((x) => (x.id === p.id ? { ...x, resolved_at: give.created_at } : x))
+        : cur.purchases,
+    }));
+    await trySb(sb.from("give_ups").insert(give), { type: "insert", table: "give_ups", payload: give });
+    if (willResolve) {
+      await trySb(sb.from("purchases").update({ resolved_at: give.created_at }).eq("id", p.id),
+        { type: "update", table: "purchases", payload: { resolved_at: give.created_at }, match: { id: p.id } });
+    }
   }
   async function removeGive(p, id) {
     const cnt = (data.gmap[p.id] || []).length;
-    await sb.from("give_ups").delete().eq("id", id);
-    if (cnt - 1 < 2 && p.resolved_at)
-      await sb.from("purchases").update({ resolved_at: null }).eq("id", p.id);
-    load();
+    const willReopen = cnt - 1 < 2 && p.resolved_at;
+    setData((cur) => ({
+      gmap: { ...cur.gmap, [p.id]: (cur.gmap[p.id] || []).filter((g) => g.id !== id) },
+      purchases: willReopen ? cur.purchases.map((x) => (x.id === p.id ? { ...x, resolved_at: null } : x)) : cur.purchases,
+    }));
+    await trySb(sb.from("give_ups").delete().eq("id", id), { type: "delete", table: "give_ups", match: { id } });
+    if (willReopen) {
+      await trySb(sb.from("purchases").update({ resolved_at: null }).eq("id", p.id),
+        { type: "update", table: "purchases", payload: { resolved_at: null }, match: { id: p.id } });
+    }
   }
   function askDelete(p) {
     setConfirm({
       text: `„${p.name}" löschen?`, yes: "Löschen", danger: true,
-      onYes: async () => { await sb.from("purchases").delete().eq("id", p.id); setConfirm(null); load(); },
+      onYes: async () => {
+        setData((cur) => ({ purchases: cur.purchases.filter((x) => x.id !== p.id), gmap: cur.gmap }));
+        await trySb(sb.from("purchases").delete().eq("id", p.id), { type: "delete", table: "purchases", match: { id: p.id } });
+        setConfirm(null);
+      },
     });
   }
 
@@ -153,6 +340,7 @@ function Board() {
   const listShown = tab === "open" ? open : done;
 
   return html`
+    <${OfflineBanner} offline=${offline} at=${offlineAt} pending=${pending} />
     <div class="tabs">
       <button class=${tab === "open" ? "active" : ""} onClick=${() => setTab("open")}>Offen (${open.length})</button>
       <button class=${tab === "done" ? "active" : ""} onClick=${() => setTab("done")}>Erledigt (${done.length})</button>
@@ -168,7 +356,14 @@ function Board() {
 
     <button class="fab" onClick=${() => setEditor(true)}>+ Gekauft</button>
 
-    ${editor && html`<${Editor} onClose=${() => setEditor(false)} onSaved=${() => { setEditor(false); load(); }} />`}
+    ${editor && html`<${Editor} onClose=${() => setEditor(false)}
+        onSaved=${(purchase, gives) => {
+          setEditor(false);
+          setData((cur) => ({
+            purchases: [purchase, ...cur.purchases],
+            gmap: gives.length ? { ...cur.gmap, [purchase.id]: gives } : cur.gmap,
+          }));
+        }} />`}
     ${confirm && html`<${ConfirmModal} text=${confirm.text} sub=${confirm.sub} yes=${confirm.yes}
         danger=${confirm.danger} onYes=${confirm.onYes} onClose=${() => setConfirm(null)} />`}
   `;
@@ -238,13 +433,17 @@ function Editor({ onClose, onSaved }) {
   async function save() {
     const nm = name.trim(); if (!nm) return;
     setBusy(true);
-    const { data: p } = await sb.from("purchases")
-      .insert({ name: nm, note: note.trim() || null }).select().single();
     const gs = [g1, g2].map((s) => s.trim()).filter(Boolean);
-    if (p && gs.length) await sb.from("give_ups").insert(gs.map((n) => ({ purchase_id: p.id, name: n })));
-    if (p && gs.length >= 2) await sb.from("purchases").update({ resolved_at: new Date().toISOString() }).eq("id", p.id);
+    const resolved_at = gs.length >= 2 ? new Date().toISOString() : null;
+    const purchase = { id: crypto.randomUUID(), name: nm, note: note.trim() || null,
+      resolved_at, created_at: new Date().toISOString() };
+    await trySb(sb.from("purchases").insert(purchase), { type: "insert", table: "purchases", payload: purchase });
+    const gives = gs.map((n) => ({ id: crypto.randomUUID(), purchase_id: purchase.id, name: n, created_at: new Date().toISOString() }));
+    for (const give of gives) {
+      await trySb(sb.from("give_ups").insert(give), { type: "insert", table: "give_ups", payload: give });
+    }
     setBusy(false);
-    onSaved();
+    onSaved(purchase, gives);
   }
 
   return html`

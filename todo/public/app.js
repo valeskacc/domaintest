@@ -12,6 +12,9 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
 });
 
+/* Offline: App-Hülle + CDN-Module per Service Worker cachen, damit die App auch ganz ohne Netz öffnet */
+if ("serviceWorker" in navigator) { navigator.serviceWorker.register("/sw.js").catch(() => {}); }
+
 /* Aufräumen: früher gesetzte, zu große Login-Cookies auf .valeska.cc entfernen –
    sie ließen Cloudflare Anfragen mit HTTP 403 ablehnen. Die Anmeldung bleibt pro
    App über den localStorage erhalten. */
@@ -26,6 +29,63 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
     }
   } catch (e) {}
 })();
+
+/* ---------- Cross-App SSO über einen Session-Vermittler (Edge Function) ----------
+   Ein zufälliger, bedeutungsloser Broker-Token (keine echten Zugangsdaten!) liegt in
+   einem kleinen Cookie auf .valeska.cc. Öffnet eine andere *.valeska.cc-App frisch
+   (neuer Tab, eigenes Home-Bildschirm-Icon), löst sie den Token bei der Edge Function
+   ein und meldet sich damit automatisch an – inkl. bereits bestätigtem 2FA-Status. */
+const BROKER_URL = "https://qcsezegptoblkpvwhtzx.supabase.co/functions/v1/session-broker";
+const BROKER_COOKIE = "vsk-sso";
+function brokerCookieGet() {
+  const m = document.cookie.match(new RegExp("(?:^|; )" + BROKER_COOKIE + "=([^;]+)"));
+  return m ? m[1] : null;
+}
+function brokerCookieSet(id) {
+  const domain = location.hostname.endsWith("valeska.cc") ? "; domain=.valeska.cc" : "";
+  document.cookie = BROKER_COOKIE + "=" + id + "; path=/; max-age=" + (60 * 86400) + "; SameSite=Lax; Secure" + domain;
+}
+function brokerCookieClear() {
+  const domain = location.hostname.endsWith("valeska.cc") ? "; domain=.valeska.cc" : "";
+  document.cookie = BROKER_COOKIE + "=; path=/; max-age=0; SameSite=Lax; Secure" + domain;
+}
+async function brokerCall(action, payload) {
+  try {
+    const res = await fetch(BROKER_URL, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, ...payload }),
+    });
+    const body = await res.json().catch(() => null);
+    return { ok: res.ok, body };
+  } catch (e) { return { ok: false, networkError: true }; }
+}
+async function brokerMint(session) {
+  if (!session) return;
+  const r = await brokerCall("mint", { access_token: session.access_token, refresh_token: session.refresh_token });
+  if (r.ok && r.body && r.body.broker_id) brokerCookieSet(r.body.broker_id);
+}
+async function brokerRedeem() {
+  const id = brokerCookieGet();
+  if (!id) return null;
+  const r = await brokerCall("redeem", { broker_id: id });
+  // Netzfehler (z. B. offline): Cookie unangetastet lassen, es beim nächsten Mal erneut
+  // versuchen. Nur eine echte "ungültig"-Antwort vom Server löscht ihn wirklich.
+  if (r.networkError) return null;
+  if (!r.ok || !r.body || !r.body.refresh_token) { brokerCookieClear(); return null; }
+  const { data, error } = await sb.auth.refreshSession({ refresh_token: r.body.refresh_token });
+  if (error || !data.session) { brokerCookieClear(); return null; }
+  brokerMint(data.session);
+  return data.session;
+}
+async function brokerRevoke() {
+  const id = brokerCookieGet();
+  brokerCookieClear();
+  if (id) brokerCall("revoke", { broker_id: id });
+}
+async function signOutEverywhere() {
+  await brokerRevoke();
+  await sb.auth.signOut();
+}
 
 /* „Diesem Gerät vertrauen" – 60 Tage kein 2FA-Code nötig */
 const TRUST_KEY = "sb-mfa-trust";
@@ -179,6 +239,92 @@ function Sortable({ ids, render, onCommit, movedRef }) {
     </div>`;
 }
 
+/* ---------- Offline: letzten Datenstand cachen + Änderungen puffern ----------
+   Beim Laden wird der Erfolg im localStorage gesichert; schlägt ein Ladevorgang
+   (kein Netz) fehl, zeigen wir stattdessen den letzten bekannten Stand. Schreibende
+   Aktionen (anlegen/abhaken/löschen), die offline oder wegen eines Netzfehlers
+   scheitern, landen in einer kleinen Warteschlange und werden automatisch
+   nachgeholt, sobald wieder Netz da ist. */
+function cacheGet(key) {
+  try { const raw = localStorage.getItem("cache:" + key); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
+}
+function cacheSet(key, data) {
+  try { localStorage.setItem("cache:" + key, JSON.stringify({ data, at: Date.now() })); } catch (e) {}
+}
+async function loadWithCache(key, loader) {
+  try {
+    if (!navigator.onLine) throw new Error("offline");
+    const data = await loader();
+    cacheSet(key, data);
+    return { data, offline: false };
+  } catch (e) {
+    const cached = cacheGet(key);
+    return { data: cached ? cached.data : null, offline: true, at: cached ? cached.at : null };
+  }
+}
+
+const OUTBOX_KEY = "cache:outbox";
+function outboxGet() { try { return JSON.parse(localStorage.getItem(OUTBOX_KEY) || "[]"); } catch (e) { return []; } }
+function outboxSet(q) { try { localStorage.setItem(OUTBOX_KEY, JSON.stringify(q)); } catch (e) {} }
+function outboxPush(op) { const q = outboxGet(); q.push(op); outboxSet(q); window.dispatchEvent(new Event("outbox-changed")); }
+function applyMatch(query, op) {
+  if (op.matchOr) return query.or(op.matchOr);
+  Object.entries(op.match || {}).forEach(([k, v]) => { query = query.eq(k, v); });
+  return query;
+}
+async function outboxFlush() {
+  const q = outboxGet();
+  if (!q.length || !navigator.onLine) return 0;
+  let ok = 0; const remaining = [];
+  for (const op of q) {
+    try {
+      let query = sb.from(op.table);
+      if (op.type === "insert") query = query.insert(op.payload);
+      else if (op.type === "update") query = applyMatch(query.update(op.payload), op);
+      else if (op.type === "delete") query = applyMatch(query.delete(), op);
+      const { error } = await query;
+      if (error) remaining.push(op); else ok++;
+    } catch (e) { remaining.push(op); }
+  }
+  outboxSet(remaining);
+  window.dispatchEvent(new Event("outbox-changed"));
+  // Eigenes Ereignis nur bei echter Synchronisierung – nicht beim bloßen Einreihen
+  // offline –, sonst würde ein Neu-Laden den gerade optimistisch gezeigten Stand
+  // sofort wieder mit dem (noch alten) Cache überschreiben.
+  if (ok > 0) window.dispatchEvent(new Event("outbox-flushed"));
+  return ok;
+}
+// Schreibt sofort; bei Fehler/offline wird die Aktion optimistisch lokal übernommen und gepuffert.
+async function trySb(promise, queueOp) {
+  if (!navigator.onLine) { outboxPush(queueOp); return { queued: true }; }
+  try {
+    const { error } = await promise;
+    if (error) { outboxPush(queueOp); return { queued: true, error }; }
+    return { queued: false };
+  } catch (e) { outboxPush(queueOp); return { queued: true, error: e }; }
+}
+function useOutbox() {
+  const [n, setN] = useState(outboxGet().length);
+  useEffect(() => {
+    function refresh() { setN(outboxGet().length); }
+    async function tryFlush() { await outboxFlush(); refresh(); }
+    window.addEventListener("outbox-changed", refresh);
+    window.addEventListener("online", tryFlush);
+    tryFlush();
+    return () => { window.removeEventListener("outbox-changed", refresh); window.removeEventListener("online", tryFlush); };
+  }, []);
+  return n;
+}
+function OfflineBanner({ offline, at, pending }) {
+  if (!offline && !pending) return "";
+  return html`
+    <div class="offlinebar">
+      ${offline
+        ? html`🔌 Offline${at ? " – Stand " + new Date(at).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) + " Uhr" : ""}`
+        : html`🔄 ${pending} Änderung${pending === 1 ? "" : "en"} werden synchronisiert …`}
+    </div>`;
+}
+
 /* ---------- Aufgabe/Artikel in eine andere Liste verschieben ---------- */
 function MoveListModal({ task, currentListId, onClose, onMoved }) {
   const [lists, setLists] = useState(null);
@@ -242,9 +388,18 @@ function App() {
     setAal(data || { currentLevel: "aal1", nextLevel: "aal1" });
   }
   useEffect(() => {
-    sb.auth.getSession().then(({ data }) => setSession(data.session ?? null));
-    const { data: sub } = sb.auth.onAuthStateChange((_e, s) => setSession(s ?? null));
-    return () => sub.subscription.unsubscribe();
+    let cancelled = false;
+    (async () => {
+      const { data } = await sb.auth.getSession();
+      if (data.session) { if (!cancelled) setSession(data.session); return; }
+      const s = await brokerRedeem();
+      if (!cancelled) setSession(s || null);
+    })();
+    const { data: sub } = sb.auth.onAuthStateChange((event, s) => {
+      setSession(s ?? null);
+      if (s && (event === "SIGNED_IN" || event === "TOKEN_REFRESHED")) brokerMint(s);
+    });
+    return () => { cancelled = true; sub.subscription.unsubscribe(); };
   }, []);
   useEffect(() => { if (session) refreshAal(); else setAal(null); }, [session]);
 
@@ -252,7 +407,7 @@ function App() {
   if (!session) return html`<${Login} />`;
   if (aal === null) return html`<div class="spinner"></div>`;
   if (aal.currentLevel === "aal1" && aal.nextLevel === "aal2" && !deviceTrusted())
-    return html`<${MfaChallenge} onDone=${refreshAal} onLogout=${() => sb.auth.signOut()} />`;
+    return html`<${MfaChallenge} onDone=${refreshAal} onLogout=${signOutEverywhere} />`;
 
   const go = (v) => setView(v);
   return html`
@@ -265,7 +420,7 @@ function App() {
       </div>
       ${view.name === "list" && html`<button title="Liste teilen" onClick=${() => setShareList(view.list)}>🔗</button>`}
       <a href="https://home.valeska.cc" style="text-decoration:none"><button>⌂ Home</button></a>
-      <button onClick=${() => sb.auth.signOut()}>Logout</button>
+      <button onClick=${signOutEverywhere}>Logout</button>
     </header>
     <main>
       ${view.name === "home"
@@ -347,6 +502,9 @@ function Home({ tab, setTab, go }) {
 function ListsTab({ go }) {
   const [lists, setLists] = useState(null);
   const [counts, setCounts] = useState({});
+  const [offline, setOffline] = useState(false);
+  const [offlineAt, setOfflineAt] = useState(null);
+  const pending = useOutbox();
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [kind, setKind] = useState("todo");
@@ -354,29 +512,45 @@ function ListsTab({ go }) {
   const movedRef = useRef(0);
 
   async function load() {
-    const { data } = await sb.from("todo_lists").select("*").order("sort").order("created_at");
-    setLists(data || []);
-    const { data: t } = await sb.from("todos").select("list_id").eq("done", false).is("parent_id", null);
-    const c = {};
-    (t || []).forEach((r) => { c[r.list_id] = (c[r.list_id] || 0) + 1; });
-    setCounts(c);
+    const r = await loadWithCache("todo_lists", async () => {
+      const { data, error } = await sb.from("todo_lists").select("*").order("sort").order("created_at");
+      if (error) throw error;
+      return data || [];
+    });
+    setLists(r.data || []); setOffline(r.offline); setOfflineAt(r.at);
+    if (!r.offline) {
+      const { data: t } = await sb.from("todos").select("list_id").eq("done", false).is("parent_id", null);
+      const c = {};
+      (t || []).forEach((row) => { c[row.list_id] = (c[row.list_id] || 0) + 1; });
+      setCounts(c);
+    }
   }
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const onFlushed = () => load();
+    window.addEventListener("outbox-flushed", onFlushed);
+    return () => window.removeEventListener("outbox-flushed", onFlushed);
+  }, []);
 
   async function create() {
     const nm = name.trim();
     if (!nm) return;
     setName(""); setAdding(false);
-    await sb.from("todo_lists").insert({ name: nm, kind, sort: Date.now() });
+    const row = { id: crypto.randomUUID(), name: nm, kind, sort: Date.now(), created_at: new Date().toISOString() };
+    setLists((cur) => [...(cur || []), row]);
+    await trySb(sb.from("todo_lists").insert(row), { type: "insert", table: "todo_lists", payload: row });
     setKind("todo");
-    load();
   }
   function askDel(l) {
     setConfirm({
       text: `Liste „${l.name}" löschen?`,
       sub: "Alle Aufgaben dieser Liste werden mitgelöscht.",
       yes: "Löschen", danger: true,
-      onYes: async () => { await sb.from("todo_lists").delete().eq("id", l.id); setConfirm(null); load(); },
+      onYes: async () => {
+        setLists((cur) => (cur || []).filter((x) => x.id !== l.id));
+        await trySb(sb.from("todo_lists").delete().eq("id", l.id), { type: "delete", table: "todo_lists", match: { id: l.id } });
+        setConfirm(null);
+      },
     });
   }
   async function commit(ids) {
@@ -388,6 +562,7 @@ function ListsTab({ go }) {
   const byId = {}; lists.forEach((l) => (byId[l.id] = l));
 
   return html`
+    <${OfflineBanner} offline=${offline} at=${offlineAt} pending=${pending} />
     ${adding
       ? html`
         <div class="card" style="margin-bottom:14px">
@@ -471,6 +646,9 @@ function AllTab({ go }) {
 /* ---------- Listenansicht ---------- */
 function ListView({ list }) {
   const [rows, setRows] = useState(null);
+  const [offline, setOffline] = useState(false);
+  const [offlineAt, setOfflineAt] = useState(null);
+  const pending = useOutbox();
   const [open, setOpen] = useState({});
   const [editor, setEditor] = useState(null);   // null | {task} | {task:null}
   const [detailId, setDetailId] = useState(null);
@@ -480,22 +658,48 @@ function ListView({ list }) {
   const movedRef = useRef(0);
 
   async function load() {
-    const { data } = await sb.from("todos").select("*").eq("list_id", list.id).order("created_at");
-    setRows(data || []);
+    const r = await loadWithCache("todos:" + list.id, async () => {
+      const { data, error } = await sb.from("todos").select("*").eq("list_id", list.id).order("created_at");
+      if (error) throw error;
+      return data || [];
+    });
+    setRows(r.data || []); setOffline(r.offline); setOfflineAt(r.at);
   }
   useEffect(() => { load(); }, [list.id]);
+  useEffect(() => {
+    const onFlushed = () => load();
+    window.addEventListener("outbox-flushed", onFlushed);
+    return () => window.removeEventListener("outbox-flushed", onFlushed);
+  }, [list.id]);
 
+  async function complete(t) {
+    const done_at = new Date().toISOString();
+    setRows((cur) => (cur || []).map((r) => (r.id === t.id || r.parent_id === t.id) ? { ...r, done: true, done_at } : r));
+    await trySb(
+      sb.from("todos").update({ done: true, done_at }).or(`id.eq.${t.id},parent_id.eq.${t.id}`),
+      { type: "update", table: "todos", payload: { done: true, done_at }, matchOr: `id.eq.${t.id},parent_id.eq.${t.id}` });
+  }
   async function restore(id) {
-    await sb.from("todos").update({ done: false, done_at: null }).eq("id", id);
-    load();
+    setRows((cur) => (cur || []).map((r) => (r.id === id ? { ...r, done: false, done_at: null } : r)));
+    await trySb(sb.from("todos").update({ done: false, done_at: null }).eq("id", id),
+      { type: "update", table: "todos", payload: { done: false, done_at: null }, match: { id } });
   }
   function askDelPerm(d) {
     setConfirm({ text: `„${d.title}" endgültig löschen?`, yes: "Löschen", danger: true,
-      onYes: async () => { await sb.from("todos").delete().eq("id", d.id); setConfirm(null); load(); } });
+      onYes: async () => {
+        setRows((cur) => (cur || []).filter((r) => r.id !== d.id));
+        await trySb(sb.from("todos").delete().eq("id", d.id), { type: "delete", table: "todos", match: { id: d.id } });
+        setConfirm(null);
+      } });
   }
   function askDelTask(t, after) {
     setConfirm({ text: `Aufgabe „${t.title}" löschen?`, yes: "Löschen", danger: true,
-      onYes: async () => { await sb.from("todos").delete().or(`id.eq.${t.id},parent_id.eq.${t.id}`); setConfirm(null); if (after) after(); load(); } });
+      onYes: async () => {
+        setRows((cur) => (cur || []).filter((r) => r.id !== t.id && r.parent_id !== t.id));
+        await trySb(sb.from("todos").delete().or(`id.eq.${t.id},parent_id.eq.${t.id}`),
+          { type: "delete", table: "todos", matchOr: `id.eq.${t.id},parent_id.eq.${t.id}` });
+        setConfirm(null); if (after) after();
+      } });
   }
   async function commit(ids) {
     await Promise.all(ids.map((id, i) => sb.from("todos").update({ sort: i }).eq("id", id)));
@@ -519,7 +723,14 @@ function ListView({ list }) {
 
   const overlays = html`
     ${editor && html`<${TaskEditor} listId=${list.id} task=${editor.task}
-        onClose=${() => setEditor(null)} onSaved=${() => { setEditor(null); load(); }} />`}
+        onClose=${() => setEditor(null)}
+        onSaved=${(row, isUpdate) => {
+          setEditor(null);
+          setRows((cur) => {
+            const c = cur || [];
+            return isUpdate ? c.map((x) => (x.id === row.id ? { ...x, ...row } : x)) : [...c, row];
+          });
+        }} />`}
     ${confirm && html`<${ConfirmModal} text=${confirm.text} sub=${confirm.sub} yes=${confirm.yes}
         danger=${confirm.danger} onYes=${confirm.onYes} onClose=${() => setConfirm(null)} />`}
     ${moveTask && html`<${MoveListModal} task=${moveTask} currentListId=${list.id}
@@ -534,6 +745,7 @@ function ListView({ list }) {
     ${overlays}`;
 
   return html`
+    <${OfflineBanner} offline=${offline} at=${offlineAt} pending=${pending} />
     ${top.length === 0
       ? html`<div class="emptyhint">Noch keine offenen Aufgaben in „${list.name}".<br/>Tippe unten auf <strong>+ Aufgabe</strong>.</div>`
       : html`<${Sortable} ids=${ordered.map((t) => t.id)} movedRef=${movedRef} onCommit=${commit}
@@ -543,7 +755,7 @@ function ListView({ list }) {
               <${TaskRow} key=${id} task=${t} subs=${subs[id] || []}
                 open=${!!open[id]} toggleOpen=${() => setOpen((o) => ({ ...o, [id]: !o[id] }))}
                 onChange=${load} onOpen=${openDetail} onDelete=${() => askDelTask(t)}
-                onMove=${() => setMoveTask(t)}
+                onMove=${() => setMoveTask(t)} onComplete=${complete}
                 dragHandle=${onDown} dragging=${dragging} showSub=${true} />`;
           }} />`}
 
@@ -579,28 +791,47 @@ function ListView({ list }) {
 /* ---------- Einkaufsliste: Artikel gruppiert nach Kategorie ---------- */
 function ShoppingView({ list }) {
   const [rows, setRows] = useState(null);
+  const [offline, setOffline] = useState(false);
+  const [offlineAt, setOfflineAt] = useState(null);
+  const pending = useOutbox();
   const [showDone, setShowDone] = useState(false);
   const [adding, setAdding] = useState(false);
   const [confirm, setConfirm] = useState(null);
   const [moveTask, setMoveTask] = useState(null);
 
   async function load() {
-    const { data } = await sb.from("todos").select("*").eq("list_id", list.id).order("created_at");
-    setRows(data || []);
+    const r = await loadWithCache("todos:" + list.id, async () => {
+      const { data, error } = await sb.from("todos").select("*").eq("list_id", list.id).order("created_at");
+      if (error) throw error;
+      return data || [];
+    });
+    setRows(r.data || []); setOffline(r.offline); setOfflineAt(r.at);
   }
   useEffect(() => { load(); }, [list.id]);
+  useEffect(() => {
+    const onFlushed = () => load();
+    window.addEventListener("outbox-flushed", onFlushed);
+    return () => window.removeEventListener("outbox-flushed", onFlushed);
+  }, [list.id]);
 
   async function complete(t) {
-    await sb.from("todos").update({ done: true, done_at: new Date().toISOString() }).eq("id", t.id);
-    load();
+    const done_at = new Date().toISOString();
+    setRows((cur) => (cur || []).map((r) => (r.id === t.id ? { ...r, done: true, done_at } : r)));
+    await trySb(sb.from("todos").update({ done: true, done_at }).eq("id", t.id),
+      { type: "update", table: "todos", payload: { done: true, done_at }, match: { id: t.id } });
   }
   async function restore(t) {
-    await sb.from("todos").update({ done: false, done_at: null }).eq("id", t.id);
-    load();
+    setRows((cur) => (cur || []).map((r) => (r.id === t.id ? { ...r, done: false, done_at: null } : r)));
+    await trySb(sb.from("todos").update({ done: false, done_at: null }).eq("id", t.id),
+      { type: "update", table: "todos", payload: { done: false, done_at: null }, match: { id: t.id } });
   }
   function askDelete(t) {
     setConfirm({ text: `„${t.title}" löschen?`, yes: "Löschen", danger: true,
-      onYes: async () => { await sb.from("todos").delete().eq("id", t.id); setConfirm(null); load(); } });
+      onYes: async () => {
+        setRows((cur) => (cur || []).filter((r) => r.id !== t.id));
+        await trySb(sb.from("todos").delete().eq("id", t.id), { type: "delete", table: "todos", match: { id: t.id } });
+        setConfirm(null);
+      } });
   }
 
   if (rows === null) return html`<div class="spinner"></div>`;
@@ -613,13 +844,15 @@ function ShoppingView({ list }) {
 
   const overlays = html`
     ${adding && html`<${ShoppingAdder} listId=${list.id}
-        onClose=${() => setAdding(false)} onSaved=${() => { setAdding(false); load(); }} />`}
+        onClose=${() => setAdding(false)}
+        onSaved=${(row) => { setAdding(false); setRows((cur) => [...(cur || []), row]); }} />`}
     ${moveTask && html`<${MoveListModal} task=${moveTask} currentListId=${list.id}
         onClose=${() => setMoveTask(null)} onMoved=${() => { setMoveTask(null); load(); }} />`}
     ${confirm && html`<${ConfirmModal} text=${confirm.text} sub=${confirm.sub} yes=${confirm.yes}
         danger=${confirm.danger} onYes=${confirm.onYes} onClose=${() => setConfirm(null)} />`}`;
 
   return html`
+    <${OfflineBanner} offline=${offline} at=${offlineAt} pending=${pending} />
     ${active.length === 0
       ? html`<div class="emptyhint">Einkaufsliste ist leer.<br/>Tippe unten auf <strong>+ Artikel</strong>.</div>`
       : catKeys.map((cat) => html`
@@ -703,10 +936,12 @@ function ShoppingAdder({ listId, onClose, onSaved }) {
     if (!nm || busy) return;
     setBusy(true);
     const cat = category || guessCategory(nm);
-    await sb.from("todos").insert({ list_id: listId, title: nm, category: cat, sort: Date.now() });
-    await upsertCatalog(nm, cat);
+    const row = { id: crypto.randomUUID(), list_id: listId, title: nm, category: cat, sort: Date.now(),
+      done: false, created_at: new Date().toISOString(), parent_id: null, due_at: null, priority: null };
+    await trySb(sb.from("todos").insert(row), { type: "insert", table: "todos", payload: row });
+    if (navigator.onLine) upsertCatalog(nm, cat).catch(() => {});
     setBusy(false);
-    onSaved();
+    onSaved(row);
   }
 
   return html`
@@ -834,8 +1069,9 @@ function SubList({ task, subs, onChange, editable }) {
 }
 
 /* ---------- Eine Aufgabe (ohne Datum in der Liste) ---------- */
-function TaskRow({ task, subs, open, toggleOpen, onChange, onOpen, onDelete, onMove, listName, dragHandle, dragging, showSub }) {
+function TaskRow({ task, subs, open, toggleOpen, onChange, onOpen, onDelete, onMove, onComplete, listName, dragHandle, dragging, showSub }) {
   async function complete() {
+    if (onComplete) { onComplete(task); return; }
     await sb.from("todos").update({ done: true, done_at: new Date().toISOString() })
       .or(`id.eq.${task.id},parent_id.eq.${task.id}`);
     onChange();
@@ -913,10 +1149,18 @@ function TaskEditor({ listId, task, onClose, onSaved }) {
     let due_at = null;
     if (date) { const d = new Date(`${date}T${time || "09:00"}`); due_at = isNaN(d.getTime()) ? null : d.toISOString(); }
     const payload = { title: t, due_at, priority: prio || null };
-    if (task) await sb.from("todos").update(payload).eq("id", task.id);
-    else await sb.from("todos").insert({ ...payload, list_id: listId, sort: Date.now() });
-    setBusy(false);
-    onSaved();
+    if (task) {
+      await trySb(sb.from("todos").update(payload).eq("id", task.id),
+        { type: "update", table: "todos", payload, match: { id: task.id } });
+      setBusy(false);
+      onSaved({ id: task.id, ...payload }, true);
+    } else {
+      const row = { id: crypto.randomUUID(), list_id: listId, sort: Date.now(), done: false,
+        created_at: new Date().toISOString(), parent_id: null, category: null, ...payload };
+      await trySb(sb.from("todos").insert(row), { type: "insert", table: "todos", payload: row });
+      setBusy(false);
+      onSaved(row, false);
+    }
   }
 
   return html`

@@ -12,6 +12,9 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
 });
 
+/* Offline: App-Hülle + CDN-Module per Service Worker cachen, damit die App auch ganz ohne Netz öffnet */
+if ("serviceWorker" in navigator) { navigator.serviceWorker.register("/sw.js").catch(() => {}); }
+
 /* Aufräumen: früher gesetzte, zu große Login-Cookies auf .valeska.cc entfernen –
    sie ließen Cloudflare Anfragen mit HTTP 403 ablehnen. Die Anmeldung bleibt pro
    App über den localStorage erhalten. */
@@ -26,6 +29,63 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
     }
   } catch (e) {}
 })();
+
+/* ---------- Cross-App SSO über einen Session-Vermittler (Edge Function) ----------
+   Ein zufälliger, bedeutungsloser Broker-Token (keine echten Zugangsdaten!) liegt in
+   einem kleinen Cookie auf .valeska.cc. Öffnet eine andere *.valeska.cc-App frisch
+   (neuer Tab, eigenes Home-Bildschirm-Icon), löst sie den Token bei der Edge Function
+   ein und meldet sich damit automatisch an – inkl. bereits bestätigtem 2FA-Status. */
+const BROKER_URL = "https://qcsezegptoblkpvwhtzx.supabase.co/functions/v1/session-broker";
+const BROKER_COOKIE = "vsk-sso";
+function brokerCookieGet() {
+  const m = document.cookie.match(new RegExp("(?:^|; )" + BROKER_COOKIE + "=([^;]+)"));
+  return m ? m[1] : null;
+}
+function brokerCookieSet(id) {
+  const domain = location.hostname.endsWith("valeska.cc") ? "; domain=.valeska.cc" : "";
+  document.cookie = BROKER_COOKIE + "=" + id + "; path=/; max-age=" + (60 * 86400) + "; SameSite=Lax; Secure" + domain;
+}
+function brokerCookieClear() {
+  const domain = location.hostname.endsWith("valeska.cc") ? "; domain=.valeska.cc" : "";
+  document.cookie = BROKER_COOKIE + "=; path=/; max-age=0; SameSite=Lax; Secure" + domain;
+}
+async function brokerCall(action, payload) {
+  try {
+    const res = await fetch(BROKER_URL, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, ...payload }),
+    });
+    const body = await res.json().catch(() => null);
+    return { ok: res.ok, body };
+  } catch (e) { return { ok: false, networkError: true }; }
+}
+async function brokerMint(session) {
+  if (!session) return;
+  const r = await brokerCall("mint", { access_token: session.access_token, refresh_token: session.refresh_token });
+  if (r.ok && r.body && r.body.broker_id) brokerCookieSet(r.body.broker_id);
+}
+async function brokerRedeem() {
+  const id = brokerCookieGet();
+  if (!id) return null;
+  const r = await brokerCall("redeem", { broker_id: id });
+  // Netzfehler (z. B. offline): Cookie unangetastet lassen, es beim nächsten Mal erneut
+  // versuchen. Nur eine echte "ungültig"-Antwort vom Server löscht ihn wirklich.
+  if (r.networkError) return null;
+  if (!r.ok || !r.body || !r.body.refresh_token) { brokerCookieClear(); return null; }
+  const { data, error } = await sb.auth.refreshSession({ refresh_token: r.body.refresh_token });
+  if (error || !data.session) { brokerCookieClear(); return null; }
+  brokerMint(data.session);
+  return data.session;
+}
+async function brokerRevoke() {
+  const id = brokerCookieGet();
+  brokerCookieClear();
+  if (id) brokerCall("revoke", { broker_id: id });
+}
+async function signOutEverywhere() {
+  await brokerRevoke();
+  await sb.auth.signOut();
+}
 
 /* „Diesem Gerät vertrauen" – 60 Tage kein 2FA-Code nötig */
 const TRUST_KEY = "sb-mfa-trust";
@@ -47,6 +107,36 @@ function Footer({ current }) {
           <span class="i">${a.i}</span><span>${a.l}</span>
         </a>`)}
     </nav>`;
+}
+
+/* ---------- Offline: letzten Datenstand cachen ----------
+   Schlägt das Laden der Reiseübersicht mangels Netz fehl, zeigen wir den zuletzt
+   bekannten Stand. Das Anlegen/Bearbeiten von Reisen bleibt bewusst online-only –
+   dafür braucht es Internet (Wetter, Details, Admin). */
+function cacheGet(key) {
+  try { const raw = localStorage.getItem("cache:" + key); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
+}
+function cacheSet(key, data) {
+  try { localStorage.setItem("cache:" + key, JSON.stringify({ data, at: Date.now() })); } catch (e) {}
+}
+async function loadWithCache(key, loader) {
+  try {
+    if (!navigator.onLine) throw new Error("offline");
+    const data = await loader();
+    cacheSet(key, data);
+    return { data, offline: false };
+  } catch (e) {
+    const cached = cacheGet(key);
+    return { data: cached ? cached.data : null, offline: true, at: cached ? cached.at : null };
+  }
+}
+function OfflineBanner({ offline, at }) {
+  if (!offline) return "";
+  return html`
+    <div class="offlinebar">
+      🔌 Offline${at ? " – Stand " + new Date(at).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) + " Uhr" : ""}
+      · neue Reisen anlegen/bearbeiten braucht wieder Netz
+    </div>`;
 }
 
 /* ---------- Stammdaten für die Eingabe ---------- */
@@ -395,9 +485,18 @@ function App() {
   const [aal, setAal] = useState(null);
 
   useEffect(() => {
-    sb.auth.getSession().then(({ data }) => setSession(data.session ?? null));
-    const { data: sub } = sb.auth.onAuthStateChange((_e, s) => setSession(s ?? null));
-    return () => sub.subscription.unsubscribe();
+    let cancelled = false;
+    (async () => {
+      const { data } = await sb.auth.getSession();
+      if (data.session) { if (!cancelled) setSession(data.session); return; }
+      const s = await brokerRedeem();
+      if (!cancelled) setSession(s || null);
+    })();
+    const { data: sub } = sb.auth.onAuthStateChange((event, s) => {
+      setSession(s ?? null);
+      if (s && (event === "SIGNED_IN" || event === "TOKEN_REFRESHED")) brokerMint(s);
+    });
+    return () => { cancelled = true; sub.subscription.unsubscribe(); };
   }, []);
 
   async function refreshAal() {
@@ -426,7 +525,7 @@ function App() {
   if (!session) return html`<${Login} />`;
   if (aal === null) return html`<div class="spinner"></div>`;
   if (aal.currentLevel === "aal1" && aal.nextLevel === "aal2" && !deviceTrusted())
-    return html`<${MfaChallenge} onDone=${refreshAal} onLogout=${() => sb.auth.signOut()} />`;
+    return html`<${MfaChallenge} onDone=${refreshAal} onLogout=${signOutEverywhere} />`;
 
   const enrolled = aal.nextLevel === "aal2";
   const go = (v) => setView(v);
@@ -438,7 +537,7 @@ function App() {
       ${profile?.role === "admin" &&
         html`<button class="ghost" onClick=${() => go({ name: "admin" })}>Nutzerverwaltung</button>`}
       <button class="ghost" title="Sicherheit / 2FA" onClick=${() => go({ name: "security" })}>🔐</button>
-      <button class="ghost" onClick=${() => sb.auth.signOut()}>Logout</button>
+      <button class="ghost" onClick=${signOutEverywhere}>Logout</button>
     </header>
     <main>
       ${view.name === "home" && html`
@@ -647,16 +746,24 @@ function Login() {
 function Home({ go }) {
   const [trips, setTrips] = useState(null);
   const [dests, setDests] = useState({});
+  const [offline, setOffline] = useState(false);
+  const [offlineAt, setOfflineAt] = useState(null);
   const [tab, setTab] = useState("upcoming");
   async function load() {
-    const [{ data: tr }, { data: lg }] = await Promise.all([
-      sb.from("trips").select("*").order("start_date", { ascending: false, nullsFirst: false }),
-      sb.from("trip_legs").select("trip_id,destination,position").order("position"),
-    ]);
-    setTrips(tr || []);
+    const r = await loadWithCache("trips_overview", async () => {
+      const [{ data: tr, error: te }, { data: lg, error: le }] = await Promise.all([
+        sb.from("trips").select("*").order("start_date", { ascending: false, nullsFirst: false }),
+        sb.from("trip_legs").select("trip_id,destination,position").order("position"),
+      ]);
+      if (te || le) throw (te || le);
+      return { trips: tr || [], legs: lg || [] };
+    });
+    const raw = r.data || { trips: [], legs: [] };
+    setTrips(raw.trips);
     const m = {};
-    for (const l of lg || []) if (l.destination && !m[l.trip_id]) m[l.trip_id] = l.destination;
+    for (const l of raw.legs) if (l.destination && !m[l.trip_id]) m[l.trip_id] = l.destination;
     setDests(m);
+    setOffline(r.offline); setOfflineAt(r.at);
   }
   useEffect(() => { load(); }, []);
   const today = new Date().toISOString().slice(0, 10);
@@ -669,6 +776,7 @@ function Home({ go }) {
 
   return html`
     <h1>Deine Reisen</h1>
+    <${OfflineBanner} offline=${offline} at=${offlineAt} />
     <div class="segmented" style="margin:10px 0 16px">
       <button class=${tab === "upcoming" ? "on" : ""} onClick=${() => setTab("upcoming")}>Zukünftig</button>
       <button class=${tab === "past" ? "on" : ""} onClick=${() => setTab("past")}>Vergangen</button>
