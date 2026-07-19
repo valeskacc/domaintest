@@ -235,6 +235,7 @@ function App() {
   const [aal, setAal] = useState(null);
   const [view, setView] = useState({ name: "home" });
   const [tab, setTab] = useState("lists"); // lists | all
+  const [shareList, setShareList] = useState(null);
 
   async function refreshAal() {
     const { data } = await sb.auth.mfa.getAuthenticatorAssuranceLevel();
@@ -262,6 +263,7 @@ function App() {
       <div class="title" style="cursor:pointer" onClick=${() => go({ name: "home" })}>
         ${view.name === "list" ? view.list.name : "✅ To-Do"}
       </div>
+      ${view.name === "list" && html`<button title="Liste teilen" onClick=${() => setShareList(view.list)}>🔗</button>`}
       <a href="https://home.valeska.cc" style="text-decoration:none"><button>⌂ Home</button></a>
       <button onClick=${() => sb.auth.signOut()}>Logout</button>
     </header>
@@ -273,6 +275,60 @@ function App() {
           : html`<${ListView} list=${view.list} />`}
       <${Footer} current="todo" />
     </main>
+    ${shareList && html`<${ShareModal} list=${shareList} onClose=${() => setShareList(null)} />`}
+  `;
+}
+
+/* ---------- Liste per Link teilen (ohne Login, nur diese eine Liste) ---------- */
+function ShareModal({ list, onClose }) {
+  const [token, setToken] = useState(undefined); // undefined=lädt, null=nicht freigegeben, string=Link aktiv
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    sb.from("todo_lists").select("share_token").eq("id", list.id).single()
+      .then(({ data }) => setToken(data ? data.share_token : null));
+  }, [list.id]);
+
+  const link = token ? `${location.origin}/share/${token}` : "";
+
+  async function enable() {
+    setBusy(true);
+    const { data, error } = await sb.rpc("enable_share", { p_list_id: list.id });
+    setBusy(false);
+    if (!error) setToken(data);
+  }
+  async function disable() {
+    setBusy(true);
+    await sb.rpc("disable_share", { p_list_id: list.id });
+    setBusy(false);
+    setToken(null);
+  }
+  async function copy() {
+    try { await navigator.clipboard.writeText(link); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch (e) {}
+  }
+
+  return html`
+    <div class="overlay" onClick=${onClose}>
+      <div class="modal" onClick=${(e) => e.stopPropagation()}>
+        <div class="editbar">
+          <button class="ghost" style="width:auto" onClick=${onClose}>Schließen</button>
+          <strong style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">„${list.name}" teilen</strong>
+          <span style="width:1px"></span>
+        </div>
+        ${token === undefined
+          ? html`<div class="spinner"></div>`
+          : token
+            ? html`
+              <p class="muted" style="margin-top:0">Wer diesen Link öffnet, kann Einträge in <strong>genau dieser Liste</strong> hinzufügen, ändern und löschen – ohne Login. Der Rest der App bleibt geschlossen.</p>
+              <div style="word-break:break-all;background:#0a1413;border:1px solid var(--border);border-radius:10px;padding:12px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.85rem">${link}</div>
+              <button class="primary block" style="margin-top:12px" onClick=${copy}>${copied ? "✓ Kopiert" : "🔗 Link kopieren"}</button>
+              <button class="ghost block" style="margin-top:10px;color:var(--danger)" disabled=${busy} onClick=${disable}>${busy ? "…" : "Freigabe beenden"}</button>`
+            : html`
+              <p class="muted" style="margin-top:0">Erzeuge einen Link, mit dem andere – ohne eigenes Konto – nur diese Liste sehen und bearbeiten können.</p>
+              <button class="primary block" disabled=${busy} onClick=${enable}>${busy ? "…" : "Freigabe aktivieren"}</button>`}
+      </div>
+    </div>
   `;
 }
 
@@ -971,4 +1027,197 @@ function MfaChallenge({ onDone, onLogout }) {
   `;
 }
 
-render(html`<${App} />`, document.getElementById("app"));
+/* ---------- Öffentliche Ansicht einer geteilten Liste (kein Login) ---------- */
+function SharedApp({ token }) {
+  const [info, setInfo] = useState(undefined); // undefined=lädt, null=ungültig, {id,name,kind}
+  useEffect(() => {
+    sb.rpc("shared_list_info", { p_token: token }).then(({ data, error }) => {
+      setInfo(error || !data || data.length === 0 ? null : data[0]);
+    });
+  }, [token]);
+
+  if (info === undefined) return html`<div class="spinner"></div>`;
+  if (info === null) return html`
+    <main>
+      <h1 class="center">🔗 Geteilte Liste</h1>
+      <p class="muted center">Dieser Link ist ungültig oder die Freigabe wurde beendet.</p>
+    </main>`;
+
+  return html`
+    <header class="appbar">
+      <div class="title">${info.kind === "shopping" ? "🛒" : "📝"} ${info.name}</div>
+      <span class="muted" style="font-size:.72rem">Geteilte Liste</span>
+    </header>
+    <main>
+      <${SharedListView} token=${token} kind=${info.kind} />
+    </main>
+  `;
+}
+
+function doneSection(done, restore, askDelete, showDone, setShowDone, isShopping) {
+  if (done.length === 0) return "";
+  return html`
+    <div style="margin-top:26px">
+      <button class="ghost block" style="text-align:left;display:flex;align-items:center;gap:8px"
+              onClick=${() => setShowDone((s) => !s)}>
+        <span class=${"caret" + (showDone ? " open" : "")}>▸</span> ✓ Erledigt (${done.length})
+      </button>
+      ${showDone && groupDone(done).map(([day, items]) => html`
+        <h2 key=${day}>${fmtDay(day)}</h2>
+        ${items.map((d) => html`
+          <div class="task done" key=${d.id}>
+            <button class="check" style="background:var(--primary);border-color:transparent" title="Wiederherstellen"
+                    onClick=${() => restore(d)}>✓</button>
+            <div class="body">
+              <div class="ttl">${d.title}</div>
+              <div class="meta">
+                ${isShopping && html`<span class="chip">${CAT_ICON[d.category] || "📦"} ${d.category || "Sonstiges"}</span>`}
+                <span class="chip">${fmtTime(d.done_at)} Uhr</span>
+              </div>
+            </div>
+            <div class="tools">
+              <button title="Wiederherstellen" onClick=${() => restore(d)}>↩</button>
+              <button title="Endgültig löschen" onClick=${() => askDelete(d)}>🗑</button>
+            </div>
+          </div>`)}
+      `)}
+    </div>`;
+}
+
+function SharedListView({ token, kind }) {
+  const [rows, setRows] = useState(null);
+  const [showDone, setShowDone] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [confirm, setConfirm] = useState(null);
+  const [err, setErr] = useState("");
+
+  async function load() {
+    const { data, error } = await sb.rpc("shared_todos", { p_token: token });
+    if (error) { setErr("Freigabe nicht mehr gültig."); setRows([]); return; }
+    setRows(data || []);
+  }
+  useEffect(() => { load(); }, [token]);
+
+  async function complete(t) { await sb.rpc("shared_todo_set_done", { p_token: token, p_todo_id: t.id, p_done: true }); load(); }
+  async function restore(t) { await sb.rpc("shared_todo_set_done", { p_token: token, p_todo_id: t.id, p_done: false }); load(); }
+  function askDelete(t) {
+    setConfirm({ text: `„${t.title}" löschen?`, yes: "Löschen", danger: true,
+      onYes: async () => { await sb.rpc("shared_todo_delete", { p_token: token, p_todo_id: t.id }); setConfirm(null); load(); } });
+  }
+
+  if (rows === null) return html`<div class="spinner"></div>`;
+  if (err) return html`<p class="error">${err}</p>`;
+
+  const active = rows.filter((r) => !r.done && !r.parent_id);
+  const done = rows.filter((r) => r.done && !r.parent_id).sort((a, b) => (b.done_at || "").localeCompare(a.done_at || ""));
+
+  const overlays = html`
+    ${adding && html`<${SharedAdder} token=${token} kind=${kind}
+        onClose=${() => setAdding(false)} onSaved=${() => { setAdding(false); load(); }} />`}
+    ${confirm && html`<${ConfirmModal} text=${confirm.text} sub=${confirm.sub} yes=${confirm.yes}
+        danger=${confirm.danger} onYes=${confirm.onYes} onClose=${() => setConfirm(null)} />`}`;
+
+  if (kind === "shopping") {
+    const groups = {};
+    active.forEach((t) => { const c = t.category || "Sonstiges"; (groups[c] ||= []).push(t); });
+    const catKeys = Object.keys(groups).sort((a, b) => catOrder(a) - catOrder(b));
+    return html`
+      ${active.length === 0
+        ? html`<div class="emptyhint">Einkaufsliste ist leer.<br/>Tippe unten auf <strong>+ Artikel</strong>.</div>`
+        : catKeys.map((cat) => html`
+            <h2 key=${cat}>${CAT_ICON[cat] || "📦"} ${cat}</h2>
+            ${groups[cat].sort((a, b) => a.title.localeCompare(b.title, "de")).map((t) => html`
+              <div class="task" key=${t.id}>
+                <button class="check" title="Erledigt" onClick=${() => complete(t)}></button>
+                <div class="body"><div class="ttl">${t.title}</div></div>
+                <div class="tools"><button title="Löschen" onClick=${() => askDelete(t)}>🗑</button></div>
+              </div>`)}
+          `)}
+      ${doneSection(done, restore, askDelete, showDone, setShowDone, true)}
+      <button class="fab" onClick=${() => setAdding(true)}>+ Artikel</button>
+      ${overlays}
+    `;
+  }
+
+  const ordered = active.slice().sort((a, b) =>
+    ((a.sort || 0) - (b.sort || 0)) || ((a.due_at || "9999").localeCompare(b.due_at || "9999")));
+
+  return html`
+    ${ordered.length === 0
+      ? html`<div class="emptyhint">Noch keine offenen Aufgaben.<br/>Tippe unten auf <strong>+ Aufgabe</strong>.</div>`
+      : ordered.map((t) => html`
+          <div class="task" key=${t.id}>
+            <button class=${"check" + (t.priority === 1 ? " p1" : "")} title="Erledigt" onClick=${() => complete(t)}></button>
+            <div class="body">
+              <div class="ttl">${t.title}</div>
+              ${(t.due_at || t.priority) && html`
+                <div class="meta">
+                  ${t.due_at && html`<span class="chip due">📅 ${fmtDueShort(t.due_at)}</span>`}
+                  ${t.priority && html`<span class="chip prio">⭐ P${t.priority}</span>`}
+                </div>`}
+            </div>
+            <div class="tools"><button title="Löschen" onClick=${() => askDelete(t)}>🗑</button></div>
+          </div>`)}
+    ${doneSection(done, restore, askDelete, showDone, setShowDone, false)}
+    <button class="fab" onClick=${() => setAdding(true)}>+ Aufgabe</button>
+    ${overlays}
+  `;
+}
+
+function SharedAdder({ token, kind, onClose, onSaved }) {
+  const [title, setTitle] = useState("");
+  const [date, setDate] = useState("");
+  const [time, setTime] = useState("");
+  const [prio, setPrio] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => { ref.current && ref.current.focus(); }, []);
+
+  async function save() {
+    const t = title.trim();
+    if (!t || busy) return;
+    setBusy(true);
+    if (kind === "shopping") {
+      await sb.rpc("shared_todo_add", { p_token: token, p_title: t, p_category: guessCategory(t) });
+    } else {
+      let due_at = null;
+      if (date) { const d = new Date(`${date}T${time || "09:00"}`); due_at = isNaN(d.getTime()) ? null : d.toISOString(); }
+      await sb.rpc("shared_todo_add", { p_token: token, p_title: t, p_due_at: due_at, p_priority: prio });
+    }
+    setBusy(false);
+    onSaved();
+  }
+
+  return html`
+    <div class="overlay" onClick=${onClose}>
+      <div class="modal" onClick=${(e) => e.stopPropagation()}>
+        <div class="editbar">
+          <button class="ghost" style="width:auto" onClick=${onClose}>Abbrechen</button>
+          <strong>${kind === "shopping" ? "Artikel hinzufügen" : "Neue Aufgabe"}</strong>
+          <button class="primary" style="width:auto" disabled=${busy || !title.trim()} onClick=${save}>${busy ? "…" : "Speichern"}</button>
+        </div>
+        <label>${kind === "shopping" ? "Artikel" : "Aufgabe"}</label>
+        <input ref=${ref} placeholder=${kind === "shopping" ? "z. B. Heidelbeeren" : "Was ist zu tun?"} value=${title}
+               onInput=${(e) => setTitle(e.target.value)}
+               onKeyDown=${(e) => e.key === "Enter" && save()} />
+        ${kind !== "shopping" && html`
+          <label>Zieldatum & Uhrzeit (optional)</label>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input type="date" style="flex:1;min-width:140px" value=${date} onInput=${(e) => setDate(e.target.value)} />
+            <input type="time" style="flex:1;min-width:110px" value=${time} disabled=${!date} onInput=${(e) => setTime(e.target.value)} />
+          </div>
+          <label>Priorität (optional)</label>
+          <div class="prios">
+            ${[1, 2, 3, 4, 5, 6].map((p) => html`
+              <button class=${prio === p ? "sel" : ""} onClick=${() => setPrio(prio === p ? null : p)}>${p}</button>`)}
+            <button class=${"none" + (prio ? "" : " sel")} onClick=${() => setPrio(null)}>keine Priorität</button>
+          </div>`}
+      </div>
+    </div>
+  `;
+}
+
+/* ---------- Router: geteilter Link vs. normale App ---------- */
+const shareMatch = location.pathname.match(/^\/share\/([A-Za-z0-9]+)/);
+if (shareMatch) render(html`<${SharedApp} token=${shareMatch[1]} />`, document.getElementById("app"));
+else render(html`<${App} />`, document.getElementById("app"));
