@@ -13,7 +13,17 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
 });
 
 /* Offline: App-Hülle + CDN-Module per Service Worker cachen, damit die App auch ganz ohne Netz öffnet */
-if ("serviceWorker" in navigator) { navigator.serviceWorker.register("/sw.js").catch(() => {}); }
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").catch(() => {});
+  // Sobald eine aktualisierte Service-Worker-Version übernimmt, einmal neu laden,
+  // damit ein zuvor fehlerhafter Stand nicht hängen bleibt.
+  let swReloaded = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (swReloaded) return;
+    swReloaded = true;
+    location.reload();
+  });
+}
 
 /* Aufräumen: früher gesetzte, zu große Login-Cookies auf .valeska.cc entfernen –
    sie ließen Cloudflare Anfragen mit HTTP 403 ablehnen. Die Anmeldung bleibt pro

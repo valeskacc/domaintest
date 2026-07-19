@@ -3,12 +3,30 @@
      du also immer den neuesten Stand, offline den zuletzt geladenen.
    - Fremde CDN-Module (esm.sh: preact/htm/supabase-js): "aus Cache sofort, im Hintergrund
      auffrischen" – ohne diese Module könnte die App offline gar nicht erst starten,
-     weil ihre import-Anweisungen sonst ohne Netz fehlschlagen. */
-const SHELL_CACHE = "shell-v1";
-const CDN_CACHE = "cdn-v1";
+     weil ihre import-Anweisungen sonst ohne Netz fehlschlagen.
+   Wichtig: eine fetch-Behandlung darf NIE ablehnen (reject) – Safari zeigt dann
+   "Safari kann die Seite nicht öffnen" statt einer sinnvollen Rückfalllösung. */
+const SHELL_CACHE = "shell-v2";
+const CDN_CACHE = "cdn-v2";
+const PRECACHE_URLS = ["/", "/index.html", "/app.js"];
 
-self.addEventListener("install", () => self.skipWaiting());
-self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
+self.addEventListener("install", (e) => {
+  e.waitUntil(
+    caches.open(SHELL_CACHE)
+      .then((cache) => Promise.all(PRECACHE_URLS.map((u) => cache.add(u).catch(() => {}))))
+  );
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", (e) => {
+  e.waitUntil(
+    caches.keys()
+      .then((names) => Promise.all(
+        names.filter((n) => n !== SHELL_CACHE && n !== CDN_CACHE).map((n) => caches.delete(n))
+      ))
+      .then(() => self.clients.claim())
+  );
+});
 
 self.addEventListener("fetch", (e) => {
   const req = e.request;
@@ -23,6 +41,14 @@ self.addEventListener("fetch", (e) => {
   }
 });
 
+const OFFLINE_FALLBACK = new Response(
+  "<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>" +
+  "<body style='background:#000;color:#eaf6f4;font-family:system-ui,sans-serif;display:flex;" +
+  "align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;padding:20px'>" +
+  "<p>🔌 Offline – diese Seite wurde noch nicht geladen.<br>Bitte später erneut versuchen.</p></body>",
+  { status: 503, headers: { "Content-Type": "text/html; charset=utf-8" } }
+);
+
 async function networkFirst(req, cacheName) {
   const cache = await caches.open(cacheName);
   try {
@@ -30,9 +56,8 @@ async function networkFirst(req, cacheName) {
     if (res && res.ok) cache.put(req, res.clone());
     return res;
   } catch (e) {
-    const cached = await cache.match(req);
-    if (cached) return cached;
-    throw e;
+    const cached = (await cache.match(req)) || (await cache.match("/index.html")) || (await cache.match("/"));
+    return cached || OFFLINE_FALLBACK;
   }
 }
 
