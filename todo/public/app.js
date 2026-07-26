@@ -538,9 +538,12 @@ function Home({ tab, setTab, go }) {
   return html`
     <div class="tabs">
       <button class=${tab === "lists" ? "active" : ""} onClick=${() => setTab("lists")}>Listen</button>
+      <button class=${tab === "shopping" ? "active" : ""} onClick=${() => setTab("shopping")}>🛒 Einkaufen</button>
       <button class=${tab === "all" ? "active" : ""} onClick=${() => setTab("all")}>Alle Aufgaben</button>
     </div>
-    ${tab === "lists" ? html`<${ListsTab} go=${go} />` : html`<${AllTab} go=${go} />`}
+    ${tab === "lists" ? html`<${ListsTab} go=${go} />`
+      : tab === "shopping" ? html`<${ShoppingHub} />`
+      : html`<${AllTab} go=${go} />`}
   `;
 }
 
@@ -831,6 +834,72 @@ function ListView({ list }) {
 
     <button class="fab" onClick=${() => setEditor({ task: null })}>+ Aufgabe</button>
     ${overlays}
+  `;
+}
+
+/* ---------- Tab: Einkaufen (Reiter zwischen Läden/Geschäftstypen) ----------
+   Jeder Reiter ist technisch eine eigene Einkaufsliste (kind="shopping") –
+   nur direkt nebeneinander erreichbar statt einzeln über "Listen". */
+function ShoppingHub() {
+  const [lists, setLists] = useState(null);
+  const [activeId, setActiveId] = useState(() => {
+    try { return localStorage.getItem("todo-shopping-active") || null; } catch (e) { return null; }
+  });
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+
+  async function load() {
+    const { data } = await sb.from("todo_lists").select("*").eq("kind", "shopping")
+      .order("sort").order("created_at");
+    const ls = data || [];
+    setLists(ls);
+    setActiveId((cur) => (cur && ls.some((l) => l.id === cur)) ? cur : (ls[0]?.id || null));
+  }
+  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const onFlushed = () => load();
+    window.addEventListener("outbox-flushed", onFlushed);
+    return () => window.removeEventListener("outbox-flushed", onFlushed);
+  }, []);
+
+  function selectTab(id) {
+    setActiveId(id);
+    try { localStorage.setItem("todo-shopping-active", id); } catch (e) {}
+  }
+
+  async function createShop() {
+    const nm = name.trim();
+    if (!nm) return;
+    setName(""); setAdding(false);
+    const row = { id: crypto.randomUUID(), name: nm, kind: "shopping", sort: Date.now(), created_at: new Date().toISOString() };
+    setLists((cur) => [...(cur || []), row]);
+    selectTab(row.id);
+    await trySb(sb.from("todo_lists").insert(row), { type: "insert", table: "todo_lists", payload: row });
+  }
+
+  if (lists === null) return html`<div class="spinner"></div>`;
+  const active = lists.find((l) => l.id === activeId) || null;
+
+  return html`
+    <div class="shoptabs">
+      ${lists.map((l) => html`
+        <button class=${"shoptab" + (l.id === activeId ? " on" : "")} key=${l.id} onClick=${() => selectTab(l.id)}>${l.name}</button>`)}
+      <button class="shoptab addshop" onClick=${() => setAdding(true)}>+ Liste/Laden</button>
+    </div>
+    ${adding && html`
+      <div class="card" style="margin-bottom:14px">
+        <label>Name des Ladens</label>
+        <input autofocus placeholder="z. B. Drogerie, Baumarkt …" value=${name}
+               onInput=${(e) => setName(e.target.value)}
+               onKeyDown=${(e) => e.key === "Enter" && createShop()} />
+        <div class="row2">
+          <button class="ghost" onClick=${() => { setAdding(false); setName(""); }}>Abbrechen</button>
+          <button class="primary" onClick=${createShop}>Anlegen</button>
+        </div>
+      </div>`}
+    ${lists.length === 0 && !adding
+      ? html`<div class="emptyhint">Noch keine Einkaufsliste.<br/>Tippe oben auf <strong>+ Liste/Laden</strong>, um loszulegen (z. B. „Lebensmittel").</div>`
+      : active && html`<${ShoppingView} list=${active} />`}
   `;
 }
 

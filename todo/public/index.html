@@ -136,6 +136,15 @@
                   background: transparent; color: var(--muted); font-weight: 600; font-size: .85rem; }
     .seg button.on { background: var(--primary); color: var(--primary-ink); border-color: transparent; }
 
+    /* Reiter im Bereich "Einkaufen" (ein Reiter = ein Laden/Geschäftstyp) */
+    .shoptabs { display: flex; gap: 8px; margin: 4px 0 14px; overflow-x: auto; -webkit-overflow-scrolling: touch;
+                scrollbar-width: none; }
+    .shoptabs::-webkit-scrollbar { display: none; }
+    .shoptab { flex: 0 0 auto; white-space: nowrap; min-height: 40px; padding: 0 16px; border: 1px solid var(--border);
+               border-radius: 999px; background: transparent; color: var(--muted); font-weight: 600; }
+    .shoptab.on { background: var(--primary); color: var(--primary-ink); border-color: transparent; }
+    .shoptab.addshop { color: var(--primary); border-style: dashed; }
+
     /* Vorschlagsliste beim Eintippen eines Einkaufsartikels */
     .suggest { margin-top: 8px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
     .sugrow { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
