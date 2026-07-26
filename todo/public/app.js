@@ -415,6 +415,35 @@ function ConfirmModal({ text, sub, yes = "OK", danger, onYes, onClose }) {
     </div>`;
 }
 
+/* ---------- Liste umbenennen (funktioniert für To-Do- wie Einkaufslisten) ---------- */
+function RenameModal({ list, onClose, onRenamed }) {
+  const [name, setName] = useState(list.name);
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    const nm = name.trim();
+    if (!nm || nm === list.name) { onClose(); return; }
+    setBusy(true);
+    await trySb(sb.from("todo_lists").update({ name: nm }).eq("id", list.id),
+      { type: "update", table: "todo_lists", payload: { name: nm }, match: { id: list.id } });
+    setBusy(false);
+    onRenamed(nm);
+  }
+
+  return html`
+    <div class="overlay" onClick=${onClose}>
+      <div class="modal confirm" onClick=${(e) => e.stopPropagation()}>
+        <h3>Liste umbenennen</h3>
+        <input autofocus value=${name} onInput=${(e) => setName(e.target.value)}
+               onKeyDown=${(e) => e.key === "Enter" && save()} />
+        <div class="row2">
+          <button class="ghost" onClick=${onClose}>Abbrechen</button>
+          <button class="primary" disabled=${busy} onClick=${save}>${busy ? "…" : "Speichern"}</button>
+        </div>
+      </div>
+    </div>`;
+}
+
 /* ---------- App ---------- */
 function App() {
   const [session, setSession] = useState(undefined);
@@ -558,6 +587,7 @@ function ListsTab({ go }) {
   const [name, setName] = useState("");
   const [kind, setKind] = useState("todo");
   const [confirm, setConfirm] = useState(null);
+  const [renaming, setRenaming] = useState(null);
   const movedRef = useRef(0);
 
   async function load() {
@@ -642,12 +672,18 @@ function ListsTab({ go }) {
                 <span class="drag" title="Ziehen zum Sortieren" onPointerDown=${onDown}>⋮⋮</span>
                 <div class="nm">${l.kind === "shopping" ? "🛒 " : ""}${l.name}</div>
                 <div class="cnt">${counts[id] || 0}</div>
+                <button class="edit" title="Umbenennen" onClick=${(e) => { e.stopPropagation(); setRenaming(l); }}>✏️</button>
                 <button class="del" title="Löschen" onClick=${(e) => { e.stopPropagation(); askDel(l); }}>🗑</button>
               </div>`;
           }} />`}
 
     ${confirm && html`<${ConfirmModal} text=${confirm.text} sub=${confirm.sub} yes=${confirm.yes}
         danger=${confirm.danger} onYes=${confirm.onYes} onClose=${() => setConfirm(null)} />`}
+    ${renaming && html`<${RenameModal} list=${renaming} onClose=${() => setRenaming(null)}
+        onRenamed=${(nm) => {
+          setLists((cur) => (cur || []).map((x) => (x.id === renaming.id ? { ...x, name: nm } : x)));
+          setRenaming(null);
+        }} />`}
   `;
 }
 
@@ -847,6 +883,7 @@ function ShoppingHub() {
   });
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
+  const [renaming, setRenaming] = useState(null);
 
   async function load() {
     const { data } = await sb.from("todo_lists").select("*").eq("kind", "shopping")
@@ -883,7 +920,10 @@ function ShoppingHub() {
   return html`
     <div class="shoptabs">
       ${lists.map((l) => html`
-        <button class=${"shoptab" + (l.id === activeId ? " on" : "")} key=${l.id} onClick=${() => selectTab(l.id)}>${l.name}</button>`)}
+        <div class=${"shoptab" + (l.id === activeId ? " on" : "")} key=${l.id}>
+          <span class="nm" onClick=${() => selectTab(l.id)}>${l.name}</span>
+          <button class="edit" title="Umbenennen" onClick=${() => setRenaming(l)}>✏️</button>
+        </div>`)}
       <button class="shoptab addshop" onClick=${() => setAdding(true)}>+ Liste/Laden</button>
     </div>
     ${adding && html`
@@ -900,6 +940,11 @@ function ShoppingHub() {
     ${lists.length === 0 && !adding
       ? html`<div class="emptyhint">Noch keine Einkaufsliste.<br/>Tippe oben auf <strong>+ Liste/Laden</strong>, um loszulegen (z. B. „Lebensmittel").</div>`
       : active && html`<${ShoppingView} list=${active} />`}
+    ${renaming && html`<${RenameModal} list=${renaming} onClose=${() => setRenaming(null)}
+        onRenamed=${(nm) => {
+          setLists((cur) => (cur || []).map((x) => (x.id === renaming.id ? { ...x, name: nm } : x)));
+          setRenaming(null);
+        }} />`}
   `;
 }
 
