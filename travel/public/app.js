@@ -423,6 +423,7 @@ function generateList(items, trip, legs, signals) {
 let categories = [];
 let catByName = {};
 let catById = {};
+let allItems = []; // kompletter Katalog, fürs Vorschlagen beim manuellen Hinzufügen in TripView
 
 /* ---------- Datenzugriff ---------- */
 async function loadMeta() {
@@ -433,7 +434,8 @@ async function loadMeta() {
   categories = cats || [];
   catByName = Object.fromEntries(categories.map((c) => [c.name, c.id]));
   catById = Object.fromEntries(categories.map((c) => [c.id, c]));
-  return { items: items || [] };
+  allItems = items || [];
+  return { items: allItems };
 }
 
 async function duplicateTrip(id) {
@@ -1213,17 +1215,25 @@ function TripView({ tripId, go }) {
     await sb.from("trip_items").update({ removed: true }).eq("id", x.id);
     recordSignal("removed", x.name, contextTags(trip, legs), x.category_id);
   }
-  async function addToCat(catId) {
-    if (!addText.trim()) return;
-    const row = { trip_id: tripId, item_id: null, name: addText.trim(), category_id: catId, qty: 1, source: "manual", packed: false, removed: false };
+  // "pick" = ein Katalog-Item aus dem Vorschlags-Picker statt Freitext -> übernimmt
+  // dessen Menge/Gewicht, damit z. B. die Gewichtsanzeige weiterhin stimmt.
+  async function addToCat(catId, pick) {
+    const nm = pick ? pick.name : addText.trim();
+    if (!nm) return;
+    const row = pick
+      ? { trip_id: tripId, item_id: pick.id, name: pick.name, category_id: catId, qty: pick.default_qty || 1, weight_grams: pick.weight_grams || null, source: "manual", packed: false, removed: false }
+      : { trip_id: tripId, item_id: null, name: nm, category_id: catId, qty: 1, source: "manual", packed: false, removed: false };
     const { data } = await sb.from("trip_items").insert(row).select().single();
     setItems((xs) => [...xs, data]);
     recordSignal("added", row.name, contextTags(trip, legs), catId);
     setAddText(""); setAddCat(null);
   }
-  async function addAnywhere() {
-    if (!gName.trim() || !gCat) return;
-    const row = { trip_id: tripId, item_id: null, name: gName.trim(), category_id: gCat, qty: 1, source: "manual", packed: false, removed: false };
+  async function addAnywhere(pick) {
+    const nm = pick ? pick.name : gName.trim();
+    if (!nm || !gCat) return;
+    const row = pick
+      ? { trip_id: tripId, item_id: pick.id, name: pick.name, category_id: gCat, qty: pick.default_qty || 1, weight_grams: pick.weight_grams || null, source: "manual", packed: false, removed: false }
+      : { trip_id: tripId, item_id: null, name: nm, category_id: gCat, qty: 1, source: "manual", packed: false, removed: false };
     const { data } = await sb.from("trip_items").insert(row).select().single();
     setItems((xs) => [...xs, data]);
     recordSignal("added", row.name, contextTags(trip, legs), gCat);
@@ -1328,7 +1338,9 @@ function TripView({ tripId, go }) {
                            onInput=${(e) => setAddText(e.target.value)}
                            onKeyDown=${(e) => e.key === "Enter" && addToCat(g.cat.id)} />
                     <button class="primary" onClick=${() => addToCat(g.cat.id)}>OK</button>
-                  </div>`}
+                  </div>
+                  <${CatalogPicker} categoryId=${g.cat.id} exclude=${items.map((x) => x.name)} filter=${addText}
+                      onPick=${(it) => addToCat(g.cat.id, it)} />`}
               ${g.cat.id && addCat !== key &&
                 html`<button class="addlink" onClick=${() => { setAddCat(key); setAddText(""); }}>＋ Item hinzufügen</button>`}
             </div>`}
@@ -1345,9 +1357,11 @@ function TripView({ tripId, go }) {
           <label>Item</label>
           <input ref=${focusOnMount} placeholder="z. B. Laufschuhe" value=${gName} onInput=${(e) => setGName(e.target.value)}
                  onKeyDown=${(e) => e.key === "Enter" && addAnywhere()} />
+          <${CatalogPicker} categoryId=${gCat} exclude=${items.map((x) => x.name)} filter=${gName}
+              onPick=${(it) => addAnywhere(it)} />
           <div class="row" style="margin-top:12px">
             <button class="ghost" onClick=${() => setGAdd(false)}>Abbrechen</button>
-            <button class="primary" onClick=${addAnywhere}>Hinzufügen</button>
+            <button class="primary" onClick=${() => addAnywhere()}>Hinzufügen</button>
           </div>
         </div>`
       : html`<button class="ghost block" onClick=${() => { setGCat(categories[0]?.id || ""); setGName(""); setGAdd(true); }}>＋ Item in beliebiger Kategorie</button>`}
@@ -1385,6 +1399,24 @@ function TripView({ tripId, go }) {
     ${editItem && html`<${ItemEditModal} item=${editItem} onClose=${() => setEditItem(null)}
         onSave=${(p) => { patch(editItem.id, p); setEditItem(null); }} />`}
   `;
+}
+
+/* ---------- Vorschläge aus dem Katalog beim manuellen Hinzufügen (nicht alles selbst tippen) ---------- */
+function CatalogPicker({ categoryId, exclude, filter, onPick }) {
+  if (!categoryId) return null;
+  const already = new Set((exclude || []).map((n) => n.toLowerCase()));
+  const q = (filter || "").trim().toLowerCase();
+  const suggestions = allItems
+    .filter((it) => it.category_id === categoryId && !already.has(it.name.toLowerCase()))
+    .filter((it) => !q || it.name.toLowerCase().includes(q))
+    .sort((a, b) => a.name.localeCompare(b.name, "de"))
+    .slice(0, 14);
+  if (!suggestions.length) return null;
+  return html`
+    <div class="chips" style="margin:8px 0 4px">
+      ${suggestions.map((it) => html`
+        <button class="chip" key=${it.id} onClick=${() => onPick(it)}>+ ${it.name}</button>`)}
+    </div>`;
 }
 
 /* ---------- Item bearbeiten: Name ändern und/oder in andere Kategorie verschieben ---------- */
