@@ -186,7 +186,7 @@ const TRANSPORT = [
   { v: "bahn", l: "🚆 Bahn" },
   { v: "motorrad", l: "🏍️ Motorrad" },
 ];
-const ACCOMMODATION = ["Hotel", "Airbnb / Ferienwohnung", "Zelt", "Hütte", "Camper", "Bei Freunden"];
+const ACCOMMODATION = ["Hotel", "Airbnb / Ferienwohnung", "Zelt", "Outdoor (ohne Zelt)", "Hütte", "Camper", "Bei Freunden"];
 const ACTIVITIES = [
   { tag: "strand", l: "Strand / Baden" },
   { tag: "kite", l: "Kitesurfen" },
@@ -214,6 +214,7 @@ const TAGS = [
   { v: "winter", l: "Winter" },
   { v: "wandern", l: "Wandern" },
   { v: "camping", l: "Camping" },
+  { v: "outdoor", l: "Outdoor (ohne Zelt)" },
   { v: "kite", l: "Kitesurfen" },
   { v: "wassersport", l: "Wassersport" },
   { v: "sport", l: "Sport" },
@@ -244,6 +245,9 @@ function daysBetween(a, b) {
   return Math.min(Math.max(d, 1), 60);
 }
 function accommodationTags(acc) {
+  // Outdoor = draußen ohne Zelt (nur Isomatte + Schlafsack), bewusst getrennt von
+  // "camping" (Zelt/Camper/Hütte), sonst würden sich die Katalog-Items überschneiden.
+  if (/outdoor/i.test(acc || "")) return ["outdoor"];
   return /zelt|camper|hütte|huette/i.test(acc || "") ? ["camping"] : [];
 }
 function purposeTagList(purpose) {
@@ -362,6 +366,16 @@ function generateList(items, trip, legs, signals) {
     const it = items.find((i) => i.name.toLowerCase() === name.toLowerCase());
     if (it) { chosen.push(toRow(it, days)); present.add(name.toLowerCase()); }
   };
+
+  // Outdoor (ohne Zelt) im Winter -> Winter-Schlafsack statt 3-Jahreszeiten-Schlafsack.
+  // "outdoor" allein matcht per Tag bereits den 3-Jahreszeiten-Schlafsack (Standardfall);
+  // ist zusätzlich die Aktivität "Winter / Ski" gesetzt, tauschen wir ihn hier explizit aus,
+  // damit nie beide gleichzeitig vorgeschlagen werden.
+  if (tags.has("outdoor") && tags.has("winter")) {
+    const j = chosen.findIndex((x) => x.name === "Schlafsack (3-Jahreszeiten, bis 0°C)");
+    if (j >= 0) chosen.splice(j, 1);
+    ensure("Schlafsack (Winter)");
+  }
 
   // Privatreise in den Sommermonaten (Mai–Sep) -> Sonnencreme
   const month = trip.start_date ? new Date(trip.start_date).getMonth() + 1 : 0;
