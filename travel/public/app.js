@@ -248,6 +248,33 @@ function withTimeout(promise, ms = 12000, label = "Zeitüberschreitung") {
 // feuert dagegen synchron beim Einhängen des Elements und fokussiert zuverlässig.
 function focusOnMount(el) { if (el) el.focus(); }
 
+// Findet ein bereits vorhandenes Item mit (fast) demselben Namen, um beim manuellen
+// Hinzufügen vor Dopplungen zu warnen (z. B. Tippfehler oder Singular/Plural-Varianten
+// wie "Socke" statt "Socken"). Levenshtein-Distanz statt reinem Gleichheitsvergleich,
+// damit auch knapp daneben liegende Schreibweisen erkannt werden.
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  const d = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) d[i][0] = i;
+  for (let j = 0; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      d[i][j] = a[i - 1] === b[j - 1] ? d[i - 1][j - 1] : 1 + Math.min(d[i - 1][j - 1], d[i - 1][j], d[i][j - 1]);
+  return d[m][n];
+}
+function findSimilarItem(name, existing) {
+  const a = name.trim().toLowerCase();
+  for (const x of existing) {
+    const b = x.name.trim().toLowerCase();
+    if (a === b) return x;
+    if (a.length > 3 && b.length > 3 && (a.includes(b) || b.includes(a))) return x;
+    if (levenshtein(a, b) <= Math.max(1, Math.floor(Math.min(a.length, b.length) * 0.25))) return x;
+  }
+  return null;
+}
+
 function daysBetween(a, b) {
   if (!a || !b) return 1;
   const d = Math.round((new Date(b) - new Date(a)) / 86400000) + 1;
@@ -1220,6 +1247,10 @@ function TripView({ tripId, go }) {
   async function addToCat(catId, pick) {
     const nm = pick ? pick.name : addText.trim();
     if (!nm) return;
+    if (!pick) {
+      const dup = findSimilarItem(nm, items);
+      if (dup && !confirm(`„${dup.name}“ ist schon in der Liste. „${nm}“ trotzdem hinzufügen?`)) return;
+    }
     const row = pick
       ? { trip_id: tripId, item_id: pick.id, name: pick.name, category_id: catId, qty: pick.default_qty || 1, weight_grams: pick.weight_grams || null, source: "manual", packed: false, removed: false }
       : { trip_id: tripId, item_id: null, name: nm, category_id: catId, qty: 1, source: "manual", packed: false, removed: false };
@@ -1235,6 +1266,10 @@ function TripView({ tripId, go }) {
   async function addAnywhere(pick) {
     const nm = pick ? pick.name : gName.trim();
     if (!nm || !gCat) return;
+    if (!pick) {
+      const dup = findSimilarItem(nm, items);
+      if (dup && !confirm(`„${dup.name}“ ist schon in der Liste. „${nm}“ trotzdem hinzufügen?`)) return;
+    }
     const row = pick
       ? { trip_id: tripId, item_id: pick.id, name: pick.name, category_id: gCat, qty: pick.default_qty || 1, weight_grams: pick.weight_grams || null, source: "manual", packed: false, removed: false }
       : { trip_id: tripId, item_id: null, name: nm, category_id: gCat, qty: 1, source: "manual", packed: false, removed: false };
