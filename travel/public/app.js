@@ -194,6 +194,7 @@ const ACTIVITIES = [
   { tag: "wandern", l: "Wandern" },
   { tag: "winter", l: "Winter / Ski" },
   { tag: "camping", l: "Camping" },
+  { tag: "overnighter", l: "Overnighter (minimal)" },
   { tag: "sport", l: "Sport / Fitness" },
   { tag: "business", l: "Business" },
 ];
@@ -215,6 +216,7 @@ const TAGS = [
   { v: "wandern", l: "Wandern" },
   { v: "camping", l: "Camping" },
   { v: "outdoor", l: "Outdoor (ohne Zelt)" },
+  { v: "overnighter", l: "Overnighter (minimal)" },
   { v: "kite", l: "Kitesurfen" },
   { v: "wassersport", l: "Wassersport" },
   { v: "sport", l: "Sport" },
@@ -367,13 +369,19 @@ function generateList(items, trip, legs, signals) {
     if (it) { chosen.push(toRow(it, days)); present.add(name.toLowerCase()); }
   };
 
-  // Outdoor (ohne Zelt) im Winter -> Winter-Schlafsack statt 3-Jahreszeiten-Schlafsack.
-  // "outdoor" allein matcht per Tag bereits den 3-Jahreszeiten-Schlafsack (Standardfall);
-  // ist zusätzlich die Aktivität "Winter / Ski" gesetzt, tauschen wir ihn hier explizit aus,
-  // damit nie beide gleichzeitig vorgeschlagen werden.
-  if (tags.has("outdoor") && tags.has("winter")) {
-    const j = chosen.findIndex((x) => x.name === "Schlafsack (3-Jahreszeiten, bis 0°C)");
-    if (j >= 0) chosen.splice(j, 1);
+  // Camping/Outdoor im Winter -> Winter-Isomatte/-Schlafsack statt der Standardvariante.
+  // Bewusst als expliziter Tausch statt über Tags gelöst: die Winter-Varianten tragen
+  // im Katalog keine eigenen Tags mehr (nur noch per ensure() erreichbar), sonst würde
+  // "winter" allein (z. B. Ski-Urlaub im Hotel, ganz ohne Zelt/Outdoor) schon
+  // Camping-Ausrüstung auslösen - und umgekehrt "camping" allein im Sommer schon die
+  // schwere Winter-Variante statt der leichten Standardvariante.
+  const campingOrOutdoor = tags.has("camping") || tags.has("outdoor");
+  if (campingOrOutdoor && tags.has("winter")) {
+    ["Isomatte (Thermarest)", "Schlafsack (3-Jahreszeiten, bis 0°C)"].forEach((nm) => {
+      const j = chosen.findIndex((x) => x.name === nm);
+      if (j >= 0) chosen.splice(j, 1);
+    });
+    ensure("Isomatte (Winter)");
     ensure("Schlafsack (Winter)");
   }
 
