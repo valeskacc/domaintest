@@ -241,6 +241,13 @@ function withTimeout(promise, ms = 12000, label = "Zeitüberschreitung") {
   ]);
 }
 
+// Ersetzt das statische "autofocus"-Attribut für Felder, die erst nach einem Klick
+// (z. B. auf "+") ins DOM kommen: der State-Update-Zyklus läuft asynchron ab, sodass
+// manche Browser (v.a. mobile Safari) den Fokus dann nicht mehr als Teil der
+// ursprünglichen Nutzer-Geste werten und die Tastatur nicht öffnen. Ein Callback-Ref
+// feuert dagegen synchron beim Einhängen des Elements und fokussiert zuverlässig.
+function focusOnMount(el) { if (el) el.focus(); }
+
 function daysBetween(a, b) {
   if (!a || !b) return 1;
   const d = Math.round((new Date(b) - new Date(a)) / 86400000) + 1;
@@ -1155,6 +1162,7 @@ function TripView({ tripId, go }) {
   const [gAdd, setGAdd] = useState(false);
   const [gName, setGName] = useState("");
   const [gCat, setGCat] = useState("");
+  const [editItem, setEditItem] = useState(null); // Item, das gerade umbenannt/verschoben wird
 
   async function reload() {
     setLoadError(null);
@@ -1305,12 +1313,13 @@ function TripView({ tripId, go }) {
                         <button onClick=${() => patch(x.id, { qty: x.qty + 1 })}>+</button>
                       </div>`
                     : html`<button class="qty-add" title="Anzahl erhöhen" onClick=${() => patch(x.id, { qty: 2 })}>+</button>`}
+                  <button class="edit" title="Bearbeiten / Kategorie ändern" onClick=${() => setEditItem(x)}>✏️</button>
                   <button class="danger" onClick=${() => remove(x)}>✕</button>
                 </div>`)}
               ${addCat === key &&
                 html`
                   <div class="addrow">
-                    <input autofocus placeholder="Was fehlt hier noch?" value=${addText}
+                    <input ref=${focusOnMount} placeholder="Was fehlt hier noch?" value=${addText}
                            onInput=${(e) => setAddText(e.target.value)}
                            onKeyDown=${(e) => e.key === "Enter" && addToCat(g.cat.id)} />
                     <button class="primary" onClick=${() => addToCat(g.cat.id)}>OK</button>
@@ -1329,7 +1338,7 @@ function TripView({ tripId, go }) {
             ${categories.map((c) => html`<option value=${c.id}>${c.icon} ${c.name}</option>`)}
           </select>
           <label>Item</label>
-          <input autofocus placeholder="z. B. Laufschuhe" value=${gName} onInput=${(e) => setGName(e.target.value)}
+          <input ref=${focusOnMount} placeholder="z. B. Laufschuhe" value=${gName} onInput=${(e) => setGName(e.target.value)}
                  onKeyDown=${(e) => e.key === "Enter" && addAnywhere()} />
           <div class="row" style="margin-top:12px">
             <button class="ghost" onClick=${() => setGAdd(false)}>Abbrechen</button>
@@ -1368,7 +1377,39 @@ function TripView({ tripId, go }) {
       <button class="danger" onClick=${deleteTrip}>🗑 Löschen</button>
     </div>
     <div style="height:24px"></div>
+    ${editItem && html`<${ItemEditModal} item=${editItem} onClose=${() => setEditItem(null)}
+        onSave=${(p) => { patch(editItem.id, p); setEditItem(null); }} />`}
   `;
+}
+
+/* ---------- Item bearbeiten: Name ändern und/oder in andere Kategorie verschieben ---------- */
+function ItemEditModal({ item, onClose, onSave }) {
+  const [name, setName] = useState(item.name);
+  const [categoryId, setCategoryId] = useState(item.category_id || "");
+
+  function save() {
+    const nm = name.trim();
+    if (!nm) return;
+    onSave({ name: nm, category_id: categoryId || null });
+  }
+
+  return html`
+    <div class="modal-overlay" onClick=${onClose}>
+      <div class="modal" onClick=${(e) => e.stopPropagation()}>
+        <h3 style="margin:0 0 14px">Item bearbeiten</h3>
+        <label>Name</label>
+        <input ref=${focusOnMount} value=${name} onInput=${(e) => setName(e.target.value)}
+               onKeyDown=${(e) => e.key === "Enter" && save()} />
+        <label>Kategorie</label>
+        <select value=${categoryId} onChange=${(e) => setCategoryId(e.target.value)}>
+          ${categories.map((c) => html`<option value=${c.id}>${c.icon} ${c.name}</option>`)}
+        </select>
+        <div class="row" style="margin-top:14px">
+          <button class="ghost" onClick=${onClose}>Abbrechen</button>
+          <button class="primary" onClick=${save}>Speichern</button>
+        </div>
+      </div>
+    </div>`;
 }
 
 /* ---------- Katalog- & Regel-Editor (Admin) ---------- */
