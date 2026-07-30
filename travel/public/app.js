@@ -1226,7 +1226,11 @@ function TripView({ tripId, go }) {
     const { data } = await sb.from("trip_items").insert(row).select().single();
     setItems((xs) => [...xs, data]);
     recordSignal("added", row.name, contextTags(trip, legs), catId);
-    setAddText(""); setAddCat(null);
+    // Bei einem Picker-Tap die Vorschlagsliste offen lassen, damit gleich das nächste
+    // Item ausgewählt werden kann - nur der Filtertext wird zurückgesetzt. Bei
+    // Freitext-Eingabe (Enter/OK) schließt sich das Add-Feld wie gewohnt.
+    setAddText("");
+    if (!pick) setAddCat(null);
   }
   async function addAnywhere(pick) {
     const nm = pick ? pick.name : gName.trim();
@@ -1237,7 +1241,8 @@ function TripView({ tripId, go }) {
     const { data } = await sb.from("trip_items").insert(row).select().single();
     setItems((xs) => [...xs, data]);
     recordSignal("added", row.name, contextTags(trip, legs), gCat);
-    setGName(""); setGAdd(false);
+    setGName("");
+    if (!pick) setGAdd(false);
   }
   const toggle = (key) => setCollapsed((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
 
