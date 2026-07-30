@@ -1617,7 +1617,10 @@ function Review({ tripId, go }) {
   return html`
     <div style="display:flex;align-items:center;gap:10px">
       <button class="ghost" style="width:auto" onClick=${() => go({ name: "trip", tripId })}>‹</button>
-      <h1 style="flex:1;font-size:1.25rem">Rückblick</h1>
+      <div style="flex:1;min-width:0">
+        <h1 style="font-size:1.25rem;margin-bottom:1px">Rückblick</h1>
+        <p class="muted" style="margin:0;font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${trip.title}</p>
+      </div>
     </div>
     <p class="muted">Markiere nur, was du <strong>nicht</strong> gebraucht hast – alles andere gilt als gebraucht.</p>
     <input style="margin-top:4px" placeholder="🔍 Item suchen…" value=${query} onInput=${(e) => setQuery(e.target.value)} />
