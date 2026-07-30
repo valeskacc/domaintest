@@ -1378,6 +1378,7 @@ function TripView({ tripId, go }) {
                            onInput=${(e) => setAddText(e.target.value)}
                            onKeyDown=${(e) => e.key === "Enter" && addToCat(g.cat.id)} />
                     <button class="primary" onClick=${() => addToCat(g.cat.id)}>OK</button>
+                    <button class="ghost" title="Schließen" style="width:auto;padding:0 12px" onClick=${() => setAddCat(null)}>✕</button>
                   </div>
                   <${CatalogPicker} categoryId=${g.cat.id} exclude=${items.map((x) => x.name)} filter=${addText}
                       onPick=${(it) => addToCat(g.cat.id, it)} />`}
