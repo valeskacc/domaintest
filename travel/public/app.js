@@ -313,7 +313,12 @@ function applyLearning(chosen, items, ctxTags, signals, days) {
   const score = new Map(); // nameKey -> { score, category_id, name }
   for (const s of signals) {
     const st = s.tags || [];
-    const relevant = st.length === 0 ? true : st.some((t) => ctx.has(t)); // leere Tags = kontextunabhängig
+    // Leere Tags = kontextunabhängig (immer relevant). Sonst müssen ALLE Tags des
+    // Signals in der aktuellen Reise vorkommen (nicht nur irgendeiner) - sonst würde
+    // eine Lektion aus einer schmalen, speziellen Reise (z. B. "privat+auto+wandern+
+    // strand") schon greifen, wenn eine ganz andere Reise nur EIN Merkmal teilt, und
+    // fälschlich auf sie überschwappen.
+    const relevant = st.length === 0 ? true : st.every((t) => ctx.has(t));
     if (!relevant) continue;
     const key = s.item_name.toLowerCase();
     const cur = score.get(key) || { score: 0, category_id: s.category_id, name: s.item_name };
