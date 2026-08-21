@@ -212,7 +212,7 @@ const CAT_RULES = [
   ["Supplements", ["eiweißriegel", "proteinriegel", "eiweißpulver", "proteinpulver", "supplement", "vitamintablette", "magnesium", "kreatin", "bcaa", "whey", "aminosäure", "omega-3", "omega 3"]],
   ["Süßes & Snacks", ["schokolade", "schoko", "keks", "chips", "gummibär", "bonbon", "riegel", "nüsse", "snack", "süßigkeit", "waffel", "müsliriegel"]],
   ["Zahnpflege", ["zahnpasta", "zahnbürste", "zahnseide", "zahnzwischenraum", "interdental", "mundspülung", "mundwasser"]],
-  ["Haarpflegeprodukte", ["shampoo", "conditioner", "spülung", "haargel", "haarspray", "haarkur", "haaröl"]],
+  ["Haarpflegeprodukte", ["shampoo", "conditioner", "spülung", "haargel", "haarspray", "haarkur", "haaröl", "festiger", "haarschaum", "stylingschaum", "föhnschaum", "haarwachs", "haarpflege"]],
   ["Hygieneartikel", ["binde", "tampon", "slipeinlage", "menstru"]],
   ["Drogerie", ["duschgel", "seife", "deo", "creme", "windel", "rasier", "watte", "toilettenpapier", "klopapier", "taschentuch", "sonnencreme", "pflaster"]],
   ["Putz- & Waschmittel", ["spülmittel", "waschmittel", "weichspüler", "putzmittel", "putz", "reiniger", "spültab", "allzweckreiniger"]],
