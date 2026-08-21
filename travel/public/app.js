@@ -199,6 +199,14 @@ const ACTIVITIES = [
   { tag: "business", l: "Business" },
 ];
 
+// "Privat" allein ist zu grob als Auslöser für schicke/Freizeit-Kleidung (Kleid,
+// Rock, Schminkzeug ...): jede private Reise ist "privat", egal ob Städtetrip oder
+// Wandertour. Bei stark outdoor-geprägten Reisen blenden wir diese Items deshalb aus.
+// "Bluse / Hemd" bleibt Ausnahme, wenn zusätzlich "business" zutrifft (z. B. Workation
+// mit gelegentlicher Wanderung braucht trotzdem was Presentables für Calls/Meetings).
+const DRESSY_ITEMS = ["Kleid", "Rock", "Schickere Schuhe", "Schminkzeug"];
+const DRESSY_UNLESS_BUSINESS = ["Bluse / Hemd"];
+
 /* Alle möglichen Auslöser für den Katalog-Editor (Reihenfolge = Anzeige) */
 const TAGS = [
   { v: "basis", l: "Immer (Basis)" },
@@ -398,11 +406,15 @@ function generateList(items, trip, legs, signals) {
   }
   // Motorrad ohne sonstiges großes Gepäck -> Sperriges weglassen
   const bulkyBlocked = motorrad && !enoughLuggage;
+  // Stark outdoor-geprägte Reise (Wandern/Camping/Outdoor) -> keine Schick-Kleidung
+  const outdoorHeavy = tags.has("wandern") || tags.has("camping") || tags.has("outdoor");
   const days = daysBetween(trip.start_date, trip.end_date);
   const chosen = items
     .filter((it) => (it.tags || []).some((t) => tags.has(t)))
     .filter((it) => !(bulkyBlocked && it.bulky))
     .filter((it) => !(days <= 2 && it.name === "Rasierer")) // Übernachtung: kein Rasierer
+    .filter((it) => !(outdoorHeavy && DRESSY_ITEMS.includes(it.name)))
+    .filter((it) => !(outdoorHeavy && !tags.has("business") && DRESSY_UNLESS_BUSINESS.includes(it.name)))
     .map((it) => toRow(it, days));
 
   // Zusatzregeln, die Items unabhängig von Tags erzwingen
