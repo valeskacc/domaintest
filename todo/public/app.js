@@ -223,6 +223,20 @@ function guessCategory(name) {
   for (const [cat, words] of CAT_RULES) if (words.some((w) => n.includes(w))) return cat;
   return "Sonstiges";
 }
+// Fallback fuer Artikel, die keine Stichwort-Regel kennt (neue Marken,
+// ungewoehnliche Produktnamen, ...): fragt ein Sprachmodell statt in "Sonstiges"
+// zu landen. Nie blockierend - der Artikel steht sofort mit der lokalen
+// Einschaetzung in der Liste, die Kategorie wird nur nachtraeglich korrigiert,
+// wenn eine Antwort kommt. Offline oder ohne Antwort passiert einfach nichts.
+async function categorizeViaAI(name) {
+  try {
+    const { data, error } = await sb.functions.invoke("categorize-item", {
+      body: { name, categories: CATEGORIES },
+    });
+    if (error || !data || !CATEGORIES.includes(data.category)) return null;
+    return data.category;
+  } catch (e) { return null; }
+}
 const catOrder = (c) => { const i = CATEGORIES.indexOf(c); return i < 0 ? CATEGORIES.length : i; };
 
 /* ---------- Drag & Drop (Zeiger-basiert, funktioniert auch mobil) ---------- */
@@ -1105,13 +1119,25 @@ function ShoppingAdder({ listId, onClose, onSaved }) {
     const nm = (name || "").trim();
     if (!nm || busy) return;
     setBusy(true);
-    const cat = category || guessCategory(nm);
+    const guessed = guessCategory(nm);
+    const cat = category || guessed;
     const row = { id: crypto.randomUUID(), list_id: listId, title: nm, category: cat, sort: Date.now(),
       done: false, created_at: new Date().toISOString(), parent_id: null, due_at: null, priority: null };
     await trySb(sb.from("todos").insert(row), { type: "insert", table: "todos", payload: row });
     if (navigator.onLine) upsertCatalog(nm, cat).catch(() => {});
     setBusy(false);
     onSaved(row);
+    // Weder Katalog-Treffer noch Stichwort-Regel gegriffen ("Sonstiges") -> im
+    // Hintergrund per KI nachfragen, ohne das Hinzufügen zu verzögern.
+    if (!category && guessed === "Sonstiges" && navigator.onLine) {
+      categorizeViaAI(nm).then((aiCat) => {
+        if (!aiCat || aiCat === "Sonstiges") return;
+        sb.from("todos").update({ category: aiCat }).eq("id", row.id).then(() => {
+          window.dispatchEvent(new Event("outbox-flushed"));
+        });
+        upsertCatalog(nm, aiCat).catch(() => {});
+      }).catch(() => {});
+    }
   }
 
   return html`
