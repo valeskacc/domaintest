@@ -282,9 +282,11 @@ function daysBetween(a, b) {
 }
 function accommodationTags(acc) {
   // Outdoor = draußen ohne Zelt (nur Isomatte + Schlafsack), bewusst getrennt von
-  // "camping" (Zelt/Camper/Hütte), sonst würden sich die Katalog-Items überschneiden.
+  // "camping" (Zelt/Camper), sonst würden sich die Katalog-Items überschneiden.
   if (/outdoor/i.test(acc || "")) return ["outdoor"];
-  return /zelt|camper|hütte|huette/i.test(acc || "") ? ["camping"] : [];
+  // "Hütte" bewusst NICHT als camping taggen: dort gibt's i.d.R. ein Dach/Bett,
+  // keine Zeltausrüstung nötig (Biwaksack, Tarp, Bodenfolie, Zeltlampe wären falsch).
+  return /zelt|camper/i.test(acc || "") ? ["camping"] : [];
 }
 function purposeTagList(purpose) {
   if (purpose === "workation") return ["privat", "business", "workation"];
@@ -353,22 +355,25 @@ function applyLearning(chosen, items, ctxTags, signals, days) {
     if (s.category_id && !cur.category_id) cur.category_id = s.category_id;
     score.set(key, cur);
   }
-  const present = new Set(chosen.map((x) => x.name.toLowerCase()));
   // Wegnehmen: was konsequent gestrichen/ungenutzt wurde
   const out = chosen.filter((x) => {
     const sc = score.get(x.name.toLowerCase());
     return !(sc && sc.score <= -3);
   });
-  // Ergänzen: was konsequent selbst hinzugefügt/vermisst wurde
-  for (const [key, v] of score) {
-    if (v.score >= 3 && !present.has(key)) {
-      const it = items.find((i) => i.name.toLowerCase() === key);
-      out.push(it ? toRow(it, days) : {
-        item_id: null, name: v.name, category_id: v.category_id || null, qty: 1,
-        weight_grams: null, packed: false, source: "suggested", removed: false,
-      });
-      present.add(key);
-    }
+  // Ergänzen: was konsequent selbst hinzugefügt/vermisst wurde - aber nicht, wenn
+  // schon ein (fast) gleichnamiges Item in der Liste steht. Sonst entstehen
+  // Dopplungen wie "Isomatte (Sommer)" (eigener Name beim manuellen Hinzufügen)
+  // neben dem katalogeigenen "Isomatte (Thermarest)". Höchster Score zuerst, damit
+  // bei mehreren ähnlichen gelernten Namen der am stärksten bestätigte gewinnt.
+  const byScoreDesc = [...score.entries()].sort((a, b) => b[1].score - a[1].score);
+  for (const [key, v] of byScoreDesc) {
+    if (v.score < 3) continue;
+    if (findSimilarItem(v.name, out)) continue;
+    const it = items.find((i) => i.name.toLowerCase() === key);
+    out.push(it ? toRow(it, days) : {
+      item_id: null, name: v.name, category_id: v.category_id || null, qty: 1,
+      weight_grams: null, packed: false, source: "suggested", removed: false,
+    });
   }
   return out;
 }
