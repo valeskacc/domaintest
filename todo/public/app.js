@@ -189,24 +189,34 @@ function buildTree(rows) {
 
 /* ---------- Einkaufs-Kategorien + Auto-Einsortierung ---------- */
 const CATEGORIES = ["Obst", "Gemüse", "Milchprodukte", "Fleisch & Fisch", "Brot & Backwaren",
-  "Tiefkühl", "Vorräte", "Getränke", "Süßes & Snacks", "Drogerie", "Haushalt", "Sonstiges"];
+  "Tiefkühl", "Vorräte", "Getränke", "Süßes & Snacks", "Supplements", "Zahnpflege",
+  "Haarpflegeprodukte", "Hygieneartikel", "Drogerie", "Putz- & Waschmittel", "Haushalt", "Sonstiges"];
 const CAT_ICON = {
   "Obst": "🍎", "Gemüse": "🥕", "Milchprodukte": "🧀", "Fleisch & Fisch": "🍖", "Brot & Backwaren": "🍞",
-  "Tiefkühl": "🧊", "Vorräte": "🥫", "Getränke": "🥤", "Süßes & Snacks": "🍫", "Drogerie": "🧴",
-  "Haushalt": "🧻", "Sonstiges": "📦",
+  "Tiefkühl": "🧊", "Vorräte": "🥫", "Getränke": "🥤", "Süßes & Snacks": "🍫", "Supplements": "💊",
+  "Zahnpflege": "🦷", "Haarpflegeprodukte": "💇", "Hygieneartikel": "🩹", "Drogerie": "🧴",
+  "Putz- & Waschmittel": "🧽", "Haushalt": "🧻", "Sonstiges": "📦",
 };
 const CAT_RULES = [
   ["Obst", ["apfel", "äpfel", "banane", "birne", "traube", "beere", "erdbeer", "heidelbeer", "himbeer", "brombeer", "orange", "mandarine", "clementine", "zitrone", "limette", "kiwi", "mango", "ananas", "pfirsich", "nektarine", "melone", "pflaume", "kirsche", "avocado", "feige", "granatapfel", "datteln"]],
   ["Gemüse", ["tomate", "gurke", "salat", "paprika", "zwiebel", "knoblauch", "kartoffel", "möhre", "karotte", "brokkoli", "blumenkohl", "spinat", "zucchini", "aubergine", "pilz", "champignon", "lauch", "sellerie", "rettich", "radieschen", "kürbis", "mais", "bohne", "erbse", "ingwer", "rucola", "kohl", "spargel", "fenchel", "kräuter", "petersilie", "basilikum"]],
-  ["Milchprodukte", ["milch", "joghurt", "jogurt", "quark", "käse", "butter", "sahne", "frischkäse", "mozzarella", "feta", "skyr", "buttermilch", "schmand", "creme fraiche", "pudding", "ei", "eier"]],
+  // "ei" allein war zu kurz und traf viele unverwandte Wörter (z.B. "EIweißriegel",
+  // "wEIchspüler") - nur noch das eindeutige "eier" (Plural) matcht hier.
+  ["Milchprodukte", ["milch", "joghurt", "jogurt", "quark", "käse", "butter", "sahne", "frischkäse", "mozzarella", "feta", "skyr", "buttermilch", "schmand", "creme fraiche", "pudding", "eier"]],
   ["Fleisch & Fisch", ["fleisch", "hähnchen", "hühnchen", "hack", "wurst", "schinken", "salami", "lachs", "fisch", "thunfisch", "garnele", "rind", "schwein", "pute", "speck", "aufschnitt", "frikadelle", "steak"]],
   ["Brot & Backwaren", ["brot", "brötchen", "toast", "baguette", "croissant", "kuchen", "semmel", "brezel", "knäcke"]],
   ["Tiefkühl", ["tiefkühl", "tk ", "eis", "pizza", "pommes"]],
   ["Vorräte", ["nudel", "pasta", "spaghetti", "reis", "mehl", "zucker", "salz", "pfeffer", "öl", "essig", "konserve", "dose", "tomatenmark", "passata", "müsli", "haferflocken", "cornflakes", "honig", "marmelade", "nutella", "gewürz", "brühe", "linse", "couscous", "senf", "ketchup", "mayo"]],
   ["Getränke", ["wasser", "saft", "cola", "limo", "bier", "wein", "kaffee", "tee", "sprudel", "schorle", "getränk"]],
+  // Vor "Süßes & Snacks", damit z.B. "Eiweißriegel" hier landet statt bei "riegel"
+  ["Supplements", ["eiweißriegel", "proteinriegel", "eiweißpulver", "proteinpulver", "supplement", "vitamintablette", "magnesium", "kreatin", "bcaa", "whey", "aminosäure", "omega-3", "omega 3"]],
   ["Süßes & Snacks", ["schokolade", "schoko", "keks", "chips", "gummibär", "bonbon", "riegel", "nüsse", "snack", "süßigkeit", "waffel", "müsliriegel"]],
-  ["Drogerie", ["shampoo", "duschgel", "seife", "zahnpasta", "zahnbürste", "deo", "creme", "windel", "tampon", "binde", "rasier", "watte", "toilettenpapier", "klopapier", "taschentuch", "sonnencreme", "pflaster"]],
-  ["Haushalt", ["spülmittel", "waschmittel", "weichspüler", "müllbeutel", "müllsack", "putz", "reiniger", "schwamm", "alufolie", "frischhalte", "backpapier", "batterie", "kerze", "serviette", "spültab"]],
+  ["Zahnpflege", ["zahnpasta", "zahnbürste", "zahnseide", "zahnzwischenraum", "interdental", "mundspülung", "mundwasser"]],
+  ["Haarpflegeprodukte", ["shampoo", "conditioner", "spülung", "haargel", "haarspray", "haarkur", "haaröl"]],
+  ["Hygieneartikel", ["binde", "tampon", "slipeinlage", "menstru"]],
+  ["Drogerie", ["duschgel", "seife", "deo", "creme", "windel", "rasier", "watte", "toilettenpapier", "klopapier", "taschentuch", "sonnencreme", "pflaster"]],
+  ["Putz- & Waschmittel", ["spülmittel", "waschmittel", "weichspüler", "putzmittel", "putz", "reiniger", "spültab", "allzweckreiniger"]],
+  ["Haushalt", ["müllbeutel", "müllsack", "schwamm", "alufolie", "frischhalte", "backpapier", "batterie", "kerze", "serviette"]],
 ];
 function guessCategory(name) {
   const n = (name || "").toLowerCase();
