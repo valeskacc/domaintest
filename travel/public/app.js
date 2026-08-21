@@ -224,6 +224,7 @@ const TAGS = [
   { v: "wandern", l: "Wandern" },
   { v: "camping", l: "Camping" },
   { v: "outdoor", l: "Outdoor (ohne Zelt)" },
+  { v: "huette", l: "Hütte" },
   { v: "overnighter", l: "Overnighter (minimal)" },
   { v: "kite", l: "Kitesurfen" },
   { v: "wassersport", l: "Wassersport" },
@@ -294,6 +295,8 @@ function accommodationTags(acc) {
   if (/outdoor/i.test(acc || "")) return ["outdoor"];
   // "Hütte" bewusst NICHT als camping taggen: dort gibt's i.d.R. ein Dach/Bett,
   // keine Zeltausrüstung nötig (Biwaksack, Tarp, Bodenfolie, Zeltlampe wären falsch).
+  // Eigener Tag statt "camping", weil viele Hütten einen Hüttenschlafsack verlangen.
+  if (/hütte|huette/i.test(acc || "")) return ["huette"];
   return /zelt|camper/i.test(acc || "") ? ["camping"] : [];
 }
 function purposeTagList(purpose) {
