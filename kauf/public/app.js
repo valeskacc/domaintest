@@ -12,15 +12,24 @@ const SUPABASE_KEY = "sb_publishable_PkA4IRR8xTrug-JgY-vN5g_EsH34zNB";
 // eigenes Zeitlimit. Ohne das wartet der Client bei totalem Verbindungsverlust
 // (z. B. Flugmodus) auf das systemeigene Timeout des Betriebssystems - das kann
 // 30-40+ Sekunden dauern, bevor überhaupt auf den Offline-Cache zurückgefallen wird.
-function fetchWithTimeout(url, options, ms = 8000) {
+// 15s statt ursprünglich 8s: beim Login (Passwort-Hashing + Netzwerk) reichten 8s auf
+// einer langsamen, aber intakten Verbindung nicht - der Login brach dann mit einem
+// rohen "AbortError" ab, obwohl er bei etwas mehr Geduld normal geklappt hätte.
+function fetchWithTimeout(url, options, ms = 15000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   return fetch(url, { ...options, signal: ctrl.signal }).finally(() => clearTimeout(t));
 }
+// Wandelt ein AbortError (Zeitlimit überschritten) in eine verständliche Meldung
+// statt der rohen, technischen Browser-Fehlermeldung.
+function friendlyAuthError(err) {
+  if (err?.name === "AbortError") return "Verbindung war zu langsam - bitte erneut versuchen.";
+  return err?.message || String(err);
+}
 
 const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
-  global: { fetch: (url, options) => fetchWithTimeout(url, options, 8000) },
+  global: { fetch: (url, options) => fetchWithTimeout(url, options, 15000) },
 });
 
 /* Offline: App-Hülle + CDN-Module per Service Worker cachen, damit die App auch ganz ohne Netz öffnet */
@@ -527,7 +536,7 @@ function Login() {
     try {
       const { error } = await sb.auth.signInWithPassword({ email: email.trim(), password: pw });
       if (error) setMsg(error.message);
-    } catch (err) { setMsg("Fehler: " + (err?.message || String(err))); }
+    } catch (err) { setMsg("Fehler: " + friendlyAuthError(err)); }
     finally { setBusy(false); }
   }
   return html`
