@@ -23,8 +23,12 @@ function fetchWithTimeout(url, options, ms = 15000) {
 // Wandelt ein AbortError (Zeitlimit überschritten) in eine verständliche Meldung
 // statt der rohen, technischen Browser-Fehlermeldung.
 function friendlyAuthError(err) {
-  if (err?.name === "AbortError") return "Verbindung war zu langsam - bitte erneut versuchen.";
-  return err?.message || String(err);
+  const name = err?.name || "";
+  const msg = err?.message || String(err);
+  if (name === "AbortError" || name === "AuthRetryableFetchError" || /abort|failed to fetch|network/i.test(msg)) {
+    return "Verbindung war zu langsam - bitte erneut versuchen.";
+  }
+  return msg;
 }
 
 const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -535,7 +539,7 @@ function Login() {
     try { localStorage.setItem("sb-stay-pref", stay ? "1" : "0"); } catch (e) {}
     try {
       const { error } = await sb.auth.signInWithPassword({ email: email.trim(), password: pw });
-      if (error) setMsg(error.message);
+      if (error) setMsg(friendlyAuthError(error));
     } catch (err) { setMsg("Fehler: " + friendlyAuthError(err)); }
     finally { setBusy(false); }
   }
