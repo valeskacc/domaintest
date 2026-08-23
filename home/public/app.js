@@ -12,10 +12,10 @@ const SUPABASE_KEY = "sb_publishable_PkA4IRR8xTrug-JgY-vN5g_EsH34zNB";
 // eigenes Zeitlimit. Ohne das wartet der Client bei totalem Verbindungsverlust
 // (z. B. Flugmodus) auf das systemeigene Timeout des Betriebssystems - das kann
 // 30-40+ Sekunden dauern, bevor überhaupt auf den Offline-Cache zurückgefallen wird.
-// 15s statt ursprünglich 8s: beim Login (Passwort-Hashing + Netzwerk) reichten 8s auf
-// einer langsamen, aber intakten Verbindung nicht - der Login brach dann mit einem
-// rohen "AbortError" ab, obwohl er bei etwas mehr Geduld normal geklappt hätte.
-function fetchWithTimeout(url, options, ms = 15000) {
+// 25s: selbst 15s reichten auf einer sehr langsamen, aber intakten mobilen
+// Verbindung noch nicht (Login brach weiterhin per Timeout ab, obwohl Supabase
+// selbst keine Fehler loggte - die Anfrage kam nie in der vollen Zeit an).
+function fetchWithTimeout(url, options, ms = 25000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   return fetch(url, { ...options, signal: ctrl.signal }).finally(() => clearTimeout(t));
@@ -33,7 +33,7 @@ function friendlyAuthError(err) {
 
 const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
-  global: { fetch: (url, options) => fetchWithTimeout(url, options, 15000) },
+  global: { fetch: (url, options) => fetchWithTimeout(url, options, 25000) },
 });
 
 /* Offline: App-Hülle + CDN-Module per Service Worker cachen, damit die App auch ganz ohne Netz öffnet */
@@ -88,7 +88,7 @@ async function brokerCall(action, payload) {
     const res = await fetchWithTimeout(BROKER_URL, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ action, ...payload }),
-    }, 6000);
+    }, 12000);
     const body = await res.json().catch(() => null);
     return { ok: res.ok, body };
   } catch (e) { return { ok: false, networkError: true }; }

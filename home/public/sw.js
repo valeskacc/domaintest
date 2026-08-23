@@ -55,7 +55,7 @@ const OFFLINE_FALLBACK = new Response(
   { status: 503, headers: { "Content-Type": "text/html; charset=utf-8" } }
 );
 
-function fetchWithTimeout(req, ms = 6000) {
+function fetchWithTimeout(req, ms = 12000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   return fetch(req, { signal: ctrl.signal }).finally(() => clearTimeout(t));
@@ -64,7 +64,7 @@ function fetchWithTimeout(req, ms = 6000) {
 async function networkFirst(req, cacheName) {
   const cache = await caches.open(cacheName);
   try {
-    const res = await fetchWithTimeout(req, 6000);
+    const res = await fetchWithTimeout(req, 12000);
     if (res && res.ok) cache.put(req, res.clone());
     return res;
   } catch (e) {
@@ -76,7 +76,7 @@ async function networkFirst(req, cacheName) {
 async function staleWhileRevalidate(req, cacheName) {
   const cache = await caches.open(cacheName);
   const cached = await cache.match(req);
-  const fetchPromise = fetchWithTimeout(req, 6000)
+  const fetchPromise = fetchWithTimeout(req, 12000)
     .then((res) => { if (res && res.ok) cache.put(req, res.clone()); return res; })
     .catch(() => null);
   return cached || (await fetchPromise) || new Response("", { status: 504 });
