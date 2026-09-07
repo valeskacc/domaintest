@@ -1248,7 +1248,10 @@ function TripView({ tripId, go }) {
   const [catOrder, setCatOrder] = useState([]); // persistierte Kategorie-Reihenfolge
   const [sortMode, setSortMode] = useState(false);
   const [query, setQuery] = useState("");
-  const [unpackedOnly, setUnpackedOnly] = useState(false);
+  // Standardmäßig nur die noch offenen Sachen zeigen - Gepacktes blendet sich
+  // dadurch beim Abhaken von selbst aus. Der Schalter oben bleibt, um bei Bedarf
+  // wieder die komplette Liste zu sehen.
+  const [unpackedOnly, setUnpackedOnly] = useState(true);
   const [gAdd, setGAdd] = useState(false);
   const [gName, setGName] = useState("");
   const [gCat, setGCat] = useState("");
