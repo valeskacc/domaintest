@@ -1007,6 +1007,9 @@ function Wizard({ go, editId }) {
   const [persons, setPersons] = useState(1);
   const [legs, setLegs] = useState([emptyLeg()]);
   const endRef = useRef(null);
+  // Sobald das Bis-Datum bewusst selbst gesetzt wurde, nicht mehr automatisch dorthin
+  // springen - sonst wird beim späteren Korrigieren des Von-Datums der Fokus geklaut.
+  const [endTouched, setEndTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [notes, setNotes] = useState("");
@@ -1030,6 +1033,8 @@ function Wizard({ go, editId }) {
       ]);
       if (t) {
         setTitle(t.title); setStart(t.start_date || ""); setEnd(t.end_date || "");
+        // Beim Bearbeiten stehen beide Daten schon - dann nicht automatisch ins Bis-Feld springen
+        if (t.end_date) setEndTouched(true);
         setPurpose(t.purpose || "privat"); setPersons(t.persons || 1); setNotes(t.notes || "");
       }
       if (lg && lg.length) setLegs(lg.map((l) => ({
@@ -1042,19 +1047,27 @@ function Wizard({ go, editId }) {
 
   const setLeg = (i, patch) => setLegs((ls) => ls.map((l, k) => (k === i ? { ...l, ...patch } : l)));
   // Anlass "Business" markiert automatisch die Aktivität "Business" in allen Etappen
-  // Von gewählt -> Bis springt mit (und darf nicht davor liegen) und bekommt direkt
-  // den Fokus, damit man auf dem Handy nicht extra ins zweite Feld tippen muss.
-  // showPicker() öffnet den Kalender dort, wo der Browser das erlaubt (Safari 16.4+);
-  // wo nicht, bleibt es beim Fokus - dann ist das Feld wenigstens schon aktiv.
+  // Von gewählt -> Bis springt mit (und darf nicht davor liegen).
+  // WICHTIG: Der Sprung ins "Bis"-Feld darf NICHT schon beim Tippen/Drehen passieren.
+  // iOS meldet jede Zwischenstellung der Datumsräder als Eingabe - wer dabei den Fokus
+  // umsetzt, reißt dem Nutzer die noch laufende Auswahl weg (genau das war kaputt).
+  // Deshalb nur vormerken und erst springen, wenn das Von-Feld verlassen wird, der
+  // Kalender also zu ist.
+  const jumpArmed = useRef(false);
   const onStart = (v) => {
     setStart(v);
     if (!end || end < v) setEnd(v);
-    requestAnimationFrame(() => {
-      const el = endRef.current;
-      if (!el) return;
-      el.focus();
-      try { el.showPicker?.(); } catch (e) {}
-    });
+    jumpArmed.current = true;
+  };
+  const onStartBlur = () => {
+    if (!jumpArmed.current || endTouched) return;
+    jumpArmed.current = false;
+    const el = endRef.current;
+    if (!el) return;
+    el.focus();
+    // Öffnet den Kalender direkt, wo der Browser das erlaubt (Safari 16.4+);
+    // sonst ist das Feld wenigstens schon aktiv.
+    try { el.showPicker?.(); } catch (e) {}
   };
   const privActive = purpose === "privat" || purpose === "workation";
   const bizActive = purpose === "business" || purpose === "workation";
@@ -1149,8 +1162,9 @@ function Wizard({ go, editId }) {
       <label>Titel</label>
       <input placeholder="z. B. Kitesurfen Ägypten" value=${title} onInput=${(e) => setTitle(e.target.value)} />
       <div class="row">
-        <div><label>Von</label><input type="date" value=${start} onInput=${(e) => onStart(e.target.value)} /></div>
-        <div><label>Bis</label><input ref=${endRef} type="date" min=${start} value=${end} onInput=${(e) => setEnd(e.target.value)} /></div>
+        <div><label>Von</label><input type="date" value=${start} onInput=${(e) => onStart(e.target.value)} onBlur=${onStartBlur} /></div>
+        <div><label>Bis</label><input ref=${endRef} type="date" min=${start} value=${end}
+             onInput=${(e) => { setEnd(e.target.value); setEndTouched(true); }} /></div>
       </div>
       ${start && end && end >= start && html`<p class="muted" style="margin:8px 0 0">📅 ${days} Tage · ${nights} ${nights === 1 ? "Nacht" : "Nächte"}</p>`}
       <label>Anlass</label>

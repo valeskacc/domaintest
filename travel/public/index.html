@@ -86,11 +86,17 @@
     button.ghost { background: transparent; }
     button.danger { color: var(--danger); border-color: transparent; background: transparent; }
     button.block { width: 100%; }
-    .row { display: flex; gap: 10px; }
-    /* min-width:0 ist wichtig: Ohne das weigern sich Flex-Kinder, unter ihre
-       Inhaltsbreite zu schrumpfen - Datumsfelder haben auf iOS eine recht große
-       Eigenbreite und schoben sich dadurch auf schmalen Displays übereinander. */
-    .row > * { flex: 1; min-width: 0; }
+    /* Zwei Punkte gegen die Überlappung auf iOS:
+       1. min-width:0 - sonst weigern sich Flex-Kinder, unter ihre Inhaltsbreite zu
+          schrumpfen. 2. flex-wrap - reicht der Platz trotzdem nicht, rutschen die
+          Felder sauber untereinander, statt sich zu überlagern. */
+    .row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .row > * { flex: 1 1 140px; min-width: 0; }
+    /* Der eigentliche Übeltäter: iOS gibt Datumsfeldern eine feste Eigenbreite, die
+       sich weder von width:100% noch vom Elternteil beeindrucken lässt. Erst ohne die
+       native Darstellung und mit min-width:0 halten sie sich an ihre Spalte. */
+    input[type="date"] { -webkit-appearance: none; appearance: none;
+                         min-width: 0; max-width: 100%; }
     .chips { display: flex; flex-wrap: wrap; gap: 8px; }
     .chip {
       width: auto; min-height: 40px; padding: 8px 14px; border-radius: 999px;
