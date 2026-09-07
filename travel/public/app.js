@@ -465,6 +465,12 @@ function generateList(items, trip, legs, signals) {
   // Längerer Strand-Urlaub (>5 Tage) -> Sitzkissen für den Strand
   if (tags.has("strand") && days > 5) ensure("Sitzkissen");
 
+  // Dr. Bronner Seife nur, wo man sie wirklich braucht: bei einem Overnighter (das
+  // deckt der Tag "overnighter" im Katalog ab) oder beim Wandern MIT Übernachtung
+  // draußen bzw. auf der Hütte. Auf einer Wanderreise mit Hotel gibt es Seife -
+  // deshalb reicht der Tag "wandern" allein bewusst nicht aus.
+  if (tags.has("wandern") && (campingOrOutdoor || tags.has("huette"))) ensure("Dr. Bronner Seife");
+
   // Genug Gepäck -> Haarschaum & Trockenshampoo (bei Motorrad/Handgepäck bewusst nicht)
   if (enoughLuggage) { ensure("Haarschaum"); ensure("Trockenshampoo"); }
 
