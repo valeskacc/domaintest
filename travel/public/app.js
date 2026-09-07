@@ -210,6 +210,7 @@ const ACTIVITIES = [
   { tag: "overnighter", l: "Overnighter (minimal)" },
   { tag: "sport", l: "Sport / Fitness" },
   { tag: "business", l: "Business" },
+  { tag: "hund", l: "Hund" },
 ];
 
 // "Privat" allein ist zu grob als Auslöser für schicke/Freizeit-Kleidung (Kleid,
@@ -460,6 +461,9 @@ function generateList(items, trip, legs, signals) {
   // Privatreise in den Sommermonaten (Mai–Sep) -> Sonnencreme
   const month = trip.start_date ? new Date(trip.start_date).getMonth() + 1 : 0;
   if (trip.purpose !== "business" && month >= 5 && month <= 9) ensure("Sonnencreme");
+
+  // Längerer Strand-Urlaub (>5 Tage) -> Sitzkissen für den Strand
+  if (tags.has("strand") && days > 5) ensure("Sitzkissen");
 
   // Genug Gepäck -> Haarschaum & Trockenshampoo (bei Motorrad/Handgepäck bewusst nicht)
   if (enoughLuggage) { ensure("Haarschaum"); ensure("Trockenshampoo"); }
