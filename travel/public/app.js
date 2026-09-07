@@ -1,5 +1,5 @@
 import { h, render } from "https://esm.sh/preact@10";
-import { useState, useEffect } from "https://esm.sh/preact@10/hooks";
+import { useState, useEffect, useRef } from "https://esm.sh/preact@10/hooks";
 import htm from "https://esm.sh/htm@3";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -1000,6 +1000,7 @@ function Wizard({ go, editId }) {
   const [purpose, setPurpose] = useState("privat");
   const [persons, setPersons] = useState(1);
   const [legs, setLegs] = useState([emptyLeg()]);
+  const endRef = useRef(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [notes, setNotes] = useState("");
@@ -1035,8 +1036,20 @@ function Wizard({ go, editId }) {
 
   const setLeg = (i, patch) => setLegs((ls) => ls.map((l, k) => (k === i ? { ...l, ...patch } : l)));
   // Anlass "Business" markiert automatisch die Aktivität "Business" in allen Etappen
-  // Von gewählt -> Bis springt mit (und darf nicht davor liegen)
-  const onStart = (v) => { setStart(v); if (!end || end < v) setEnd(v); };
+  // Von gewählt -> Bis springt mit (und darf nicht davor liegen) und bekommt direkt
+  // den Fokus, damit man auf dem Handy nicht extra ins zweite Feld tippen muss.
+  // showPicker() öffnet den Kalender dort, wo der Browser das erlaubt (Safari 16.4+);
+  // wo nicht, bleibt es beim Fokus - dann ist das Feld wenigstens schon aktiv.
+  const onStart = (v) => {
+    setStart(v);
+    if (!end || end < v) setEnd(v);
+    requestAnimationFrame(() => {
+      const el = endRef.current;
+      if (!el) return;
+      el.focus();
+      try { el.showPicker?.(); } catch (e) {}
+    });
+  };
   const privActive = purpose === "privat" || purpose === "workation";
   const bizActive = purpose === "business" || purpose === "workation";
   const togglePart = (which) => {
@@ -1131,7 +1144,7 @@ function Wizard({ go, editId }) {
       <input placeholder="z. B. Kitesurfen Ägypten" value=${title} onInput=${(e) => setTitle(e.target.value)} />
       <div class="row">
         <div><label>Von</label><input type="date" value=${start} onInput=${(e) => onStart(e.target.value)} /></div>
-        <div><label>Bis</label><input type="date" min=${start} value=${end} onInput=${(e) => setEnd(e.target.value)} /></div>
+        <div><label>Bis</label><input ref=${endRef} type="date" min=${start} value=${end} onInput=${(e) => setEnd(e.target.value)} /></div>
       </div>
       ${start && end && end >= start && html`<p class="muted" style="margin:8px 0 0">📅 ${days} Tage · ${nights} ${nights === 1 ? "Nacht" : "Nächte"}</p>`}
       <label>Anlass</label>

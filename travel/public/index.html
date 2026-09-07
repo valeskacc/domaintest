@@ -87,7 +87,10 @@
     button.danger { color: var(--danger); border-color: transparent; background: transparent; }
     button.block { width: 100%; }
     .row { display: flex; gap: 10px; }
-    .row > * { flex: 1; }
+    /* min-width:0 ist wichtig: Ohne das weigern sich Flex-Kinder, unter ihre
+       Inhaltsbreite zu schrumpfen - Datumsfelder haben auf iOS eine recht große
+       Eigenbreite und schoben sich dadurch auf schmalen Displays übereinander. */
+    .row > * { flex: 1; min-width: 0; }
     .chips { display: flex; flex-wrap: wrap; gap: 8px; }
     .chip {
       width: auto; min-height: 40px; padding: 8px 14px; border-radius: 999px;
