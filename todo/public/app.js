@@ -752,27 +752,22 @@ function AllTab({ go }) {
 
   if (data === null) return html`<div class="spinner"></div>`;
   const { top, subs } = data.tree;
-  const withDue = top.filter((t) => t.due_at).sort((a, b) => a.due_at.localeCompare(b.due_at));
-  const withPrio = top.filter((t) => !t.due_at && t.priority).sort((a, b) => a.priority - b.priority);
-  const rest = top.filter((t) => !t.due_at && !t.priority);
+  // Eine durchgehende Liste, streng chronologisch: zuletzt erstellte Aufgabe oben.
+  // Die frühere Gruppierung (Zieldatum / Priorität / Rest) ist damit aufgelöst -
+  // Zieldatum und Priorität stehen weiterhin als Chips an jeder Zeile, überfällige
+  // Termine bleiben rot hervorgehoben.
+  const sorted = [...top].sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
   const openTask = (t) => go({ name: "list", list: data.listMap[t.list_id] || { id: t.list_id, name: "Liste" } });
 
   if (top.length === 0)
     return html`<div class="emptyhint">Keine offenen Aufgaben. Alles erledigt! 🎉</div>`;
 
-  const section = (title, items) => items.length > 0 && html`
-    <h2>${title}</h2>
-    ${items.map((t) => html`
+  return html`
+    ${sorted.map((t) => html`
       <${TaskRow} key=${t.id} task=${t} subs=${subs[t.id] || []}
         open=${!!open[t.id]} toggleOpen=${() => setOpen((o) => ({ ...o, [t.id]: !o[t.id] }))}
         listName=${data.listMap[t.list_id]?.name} onChange=${load} onOpen=${openTask}
         onMove=${() => setMoveTask(t)} showCreated=${true} showSub=${true} />`)}
-  `;
-
-  return html`
-    ${section("📅 Mit Zieldatum", withDue)}
-    ${section("⭐ Nach Priorität", withPrio)}
-    ${section("Ohne Datum / Priorität", rest)}
     ${moveTask && html`<${MoveListModal} task=${moveTask} currentListId=${moveTask.list_id}
       onClose=${() => setMoveTask(null)}
       onMoved=${() => { setMoveTask(null); load(); }} />`}
