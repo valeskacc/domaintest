@@ -184,6 +184,15 @@ function fmtDateTime(iso) {
 }
 // Kompakte Datumsanzeige für die Listenzeile (klein)
 const fmtDueShort = (iso) => iso ? dayLabel(localYmd(new Date(iso))) : "";
+// Erstelldatum in der Übersicht: frische Einträge sprechend ("Heute"/"Gestern"),
+// ältere kompakt MIT Jahr - bei monatealten Aufgaben wäre "Mo, 15. Sep" mehrdeutig.
+const fmtCreatedShort = (iso) => {
+  if (!iso) return "";
+  const ymd = localYmd(new Date(iso));
+  if (ymd === today()) return "Heute";
+  if (ymd === localYmd(new Date(Date.now() - 864e5))) return "Gestern";
+  return new Date(iso).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "2-digit" });
+};
 // Gruppiert erledigte Aufgaben nach Erledigungs-Datum (neueste zuerst)
 function groupDone(done) {
   const map = {};
@@ -728,6 +737,7 @@ function ListsTab({ go }) {
 function AllTab({ go }) {
   const [data, setData] = useState(null); // {tree, listMap}
   const [open, setOpen] = useState({});
+  const [moveTask, setMoveTask] = useState(null);
 
   async function load() {
     const { data: lists } = await sb.from("todo_lists").select("id,name,kind");
@@ -755,13 +765,17 @@ function AllTab({ go }) {
     ${items.map((t) => html`
       <${TaskRow} key=${t.id} task=${t} subs=${subs[t.id] || []}
         open=${!!open[t.id]} toggleOpen=${() => setOpen((o) => ({ ...o, [t.id]: !o[t.id] }))}
-        listName=${data.listMap[t.list_id]} onChange=${load} onOpen=${openTask} showSub=${true} />`)}
+        listName=${data.listMap[t.list_id]?.name} onChange=${load} onOpen=${openTask}
+        onMove=${() => setMoveTask(t)} showCreated=${true} showSub=${true} />`)}
   `;
 
   return html`
     ${section("📅 Mit Zieldatum", withDue)}
     ${section("⭐ Nach Priorität", withPrio)}
     ${section("Ohne Datum / Priorität", rest)}
+    ${moveTask && html`<${MoveListModal} task=${moveTask} currentListId=${moveTask.list_id}
+      onClose=${() => setMoveTask(null)}
+      onMoved=${() => { setMoveTask(null); load(); }} />`}
   `;
 }
 
@@ -1278,7 +1292,7 @@ function SubList({ task, subs, onChange, editable }) {
 }
 
 /* ---------- Eine Aufgabe (ohne Datum in der Liste) ---------- */
-function TaskRow({ task, subs, open, toggleOpen, onChange, onOpen, onDelete, onMove, onComplete, listName, dragHandle, dragging, showSub }) {
+function TaskRow({ task, subs, open, toggleOpen, onChange, onOpen, onDelete, onMove, onComplete, listName, dragHandle, dragging, showSub, showCreated }) {
   async function complete() {
     if (onComplete) { onComplete(task); return; }
     await sb.from("todos").update({ done: true, done_at: new Date().toISOString() })
@@ -1291,9 +1305,10 @@ function TaskRow({ task, subs, open, toggleOpen, onChange, onOpen, onDelete, onM
       <button class=${"check" + (task.priority === 1 ? " p1" : "")} title="Erledigt" onClick=${complete}></button>
       <div class="body" style=${onOpen ? "cursor:pointer" : ""} onClick=${() => onOpen && onOpen(task)}>
         <div class="ttl">${task.title}</div>
-        ${(task.due_at || listName || task.priority || subs.length > 0) && html`
+        ${(task.due_at || listName || task.priority || subs.length > 0 || (showCreated && task.created_at)) && html`
           <div class="meta">
             ${task.due_at && html`<span class=${"chip due" + (task.due_at < new Date().toISOString() ? " over" : "")}>📅 ${fmtDueShort(task.due_at)}</span>`}
+            ${showCreated && task.created_at && html`<span class="chip" title="Erstellt am">✏️ ${fmtCreatedShort(task.created_at)}</span>`}
             ${listName && html`<span class="chip">🗂 ${listName}</span>`}
             ${task.priority && html`<span class="chip prio">⭐ P${task.priority}</span>`}
             ${subs.length > 0 && html`<span class="chip" style="cursor:pointer"
