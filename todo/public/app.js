@@ -182,6 +182,33 @@ function fmtDateTime(iso) {
   const d = new Date(iso);
   return dayLabel(localYmd(d)) + ", " + fmtTime(iso) + " Uhr";
 }
+/* Erkennt Links in einem Text und gibt eine Mischung aus Textstücken und
+   <a>-Elementen zurück. Bewusst aus echten Elementen zusammengesetzt statt über
+   innerHTML: So kann selbst eingetippter Text nie als HTML ausgeführt werden. */
+const URL_RE = /(?:https?:\/\/|www\.)[^\s]+/gi;
+function linkify(text) {
+  const s = String(text ?? "");
+  const out = [];
+  let last = 0, found = false;
+  for (const m of s.matchAll(URL_RE)) {
+    let url = m[0];
+    // Satzzeichen am Ende gehören meist zum Satz, nicht zur Adresse
+    const trail = url.match(/[.,;:!?)\]}»"']+$/);
+    if (trail) url = url.slice(0, -trail[0].length);
+    if (!url) continue;
+    found = true;
+    if (m.index > last) out.push(s.slice(last, m.index));
+    const href = /^www\./i.test(url) ? "https://" + url : url;
+    // stopPropagation: sonst würde der Klick zusätzlich die Zeile öffnen
+    out.push(html`<a href=${href} target="_blank" rel="noopener noreferrer"
+      onClick=${(e) => e.stopPropagation()}>${url}</a>`);
+    last = m.index + url.length;
+  }
+  if (!found) return s;
+  if (last < s.length) out.push(s.slice(last));
+  return out;
+}
+
 // Kompakte Datumsanzeige für die Listenzeile (klein)
 const fmtDueShort = (iso) => iso ? dayLabel(localYmd(new Date(iso))) : "";
 // Erstelldatum in der Übersicht: frische Einträge sprechend ("Heute"/"Gestern"),
@@ -903,7 +930,7 @@ function ListView({ list }) {
               <button class="check" style="background:var(--primary);border-color:transparent" title="Wiederherstellen"
                       onClick=${() => restore(d.id)}>✓</button>
               <div class="body">
-                <div class="ttl">${d.title}</div>
+                <div class="ttl">${linkify(d.title)}</div>
                 <div class="meta"><span class="chip">${fmtTime(d.done_at)} Uhr</span></div>
               </div>
               <div class="tools">
@@ -1066,7 +1093,7 @@ function ShoppingView({ list }) {
           ${groups[cat].sort((a, b) => a.title.localeCompare(b.title, "de")).map((t) => html`
             <div class="task" key=${t.id}>
               <button class="check" title="Erledigt" onClick=${() => complete(t)}></button>
-              <div class="body"><div class="ttl">${t.title}</div></div>
+              <div class="body"><div class="ttl">${linkify(t.title)}</div></div>
               <div class="tools">
                 <button title="In andere Liste verschieben" onClick=${() => setMoveTask(t)}>↔</button>
                 <button title="Löschen" onClick=${() => askDelete(t)}>🗑</button>
@@ -1087,7 +1114,7 @@ function ShoppingView({ list }) {
               <button class="check" style="background:var(--primary);border-color:transparent" title="Wiederherstellen"
                       onClick=${() => restore(d)}>✓</button>
               <div class="body">
-                <div class="ttl">${d.title}</div>
+                <div class="ttl">${linkify(d.title)}</div>
                 <div class="meta">
                   <span class="chip">${CAT_ICON[d.category] || "📦"} ${d.category || "Sonstiges"}</span>
                   <span class="chip">${fmtTime(d.done_at)} Uhr</span>
@@ -1273,7 +1300,7 @@ function SubList({ task, subs, onChange, editable }) {
       ${subs.map((s) => html`
         <div class="sub" key=${s.id}>
           <button class="check" title="Erledigt" onClick=${() => completeSub(s.id)}></button>
-          <div class="ttl">${s.title}</div>
+          <div class="ttl">${linkify(s.title)}</div>
           ${editable && html`<button class="del" onClick=${() => delSub(s.id)}>🗑</button>`}
         </div>`)}
       ${editable && html`
@@ -1299,7 +1326,7 @@ function TaskRow({ task, subs, open, toggleOpen, onChange, onOpen, onDelete, onM
     <div class=${"task" + (dragging ? " dragging" : "")} data-sid=${task.id}>
       <button class=${"check" + (task.priority === 1 ? " p1" : "")} title="Erledigt" onClick=${complete}></button>
       <div class="body" style=${onOpen ? "cursor:pointer" : ""} onClick=${() => onOpen && onOpen(task)}>
-        <div class="ttl">${task.title}</div>
+        <div class="ttl">${linkify(task.title)}</div>
         ${(task.due_at || listName || task.priority || subs.length > 0 || (showCreated && task.created_at)) && html`
           <div class="meta">
             ${task.due_at && html`<span class=${"chip due" + (task.due_at < new Date().toISOString() ? " over" : "")}>📅 ${fmtDueShort(task.due_at)}</span>`}
@@ -1330,7 +1357,7 @@ function TaskDetail({ task, subs, onBack, onChange, onEdit, onDelete, onMove }) 
       <button class="ghost" style="width:auto" onClick=${onBack}>‹ Zurück</button>
       <button class="ghost" style="width:auto" onClick=${onEdit}>✎ Bearbeiten</button>
     </div>
-    <h1 style="margin:12px 0 6px">${task.title}</h1>
+    <h1 style="margin:12px 0 6px">${linkify(task.title)}</h1>
     <div class="meta" style="margin-bottom:8px">
       ${task.due_at
         ? html`<span class=${"chip due" + (over ? " over" : "")}>📅 ${fmtDateTime(task.due_at)}</span>`
@@ -1532,7 +1559,7 @@ function doneSection(done, restore, askDelete, showDone, setShowDone, isShopping
             <button class="check" style="background:var(--primary);border-color:transparent" title="Wiederherstellen"
                     onClick=${() => restore(d)}>✓</button>
             <div class="body">
-              <div class="ttl">${d.title}</div>
+              <div class="ttl">${linkify(d.title)}</div>
               <div class="meta">
                 ${isShopping && html`<span class="chip">${CAT_ICON[d.category] || "📦"} ${d.category || "Sonstiges"}</span>`}
                 <span class="chip">${fmtTime(d.done_at)} Uhr</span>
@@ -1592,7 +1619,7 @@ function SharedListView({ token, kind }) {
             ${groups[cat].sort((a, b) => a.title.localeCompare(b.title, "de")).map((t) => html`
               <div class="task" key=${t.id}>
                 <button class="check" title="Erledigt" onClick=${() => complete(t)}></button>
-                <div class="body"><div class="ttl">${t.title}</div></div>
+                <div class="body"><div class="ttl">${linkify(t.title)}</div></div>
                 <div class="tools"><button title="Löschen" onClick=${() => askDelete(t)}>🗑</button></div>
               </div>`)}
           `)}
@@ -1612,7 +1639,7 @@ function SharedListView({ token, kind }) {
           <div class="task" key=${t.id}>
             <button class=${"check" + (t.priority === 1 ? " p1" : "")} title="Erledigt" onClick=${() => complete(t)}></button>
             <div class="body">
-              <div class="ttl">${t.title}</div>
+              <div class="ttl">${linkify(t.title)}</div>
               ${(t.due_at || t.priority) && html`
                 <div class="meta">
                   ${t.due_at && html`<span class="chip due">📅 ${fmtDueShort(t.due_at)}</span>`}

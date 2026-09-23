@@ -84,6 +84,9 @@
     .task .check.p1 { border-color: var(--danger); }
     .task .body { flex: 1; min-width: 0; }
     .task .ttl { overflow-wrap: anywhere; }
+    /* Automatisch erkannte Links: unterstrichen, damit sie sich vom übrigen
+       Aufgabentext abheben und als anklickbar erkennbar sind */
+    .ttl a, h1 a { text-decoration: underline; }
     .task .meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
     .chip { font-size: .72rem; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border);
             color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
